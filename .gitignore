@@ -1,0 +1,30 @@
+# Binaries
+*.exe
+*.exe~
+app
+app-old
+
+# Environment
+.env
+.env.zip
+
+# Database
+*.db
+*.db-wal
+*.db-shm
+
+# Logs
+*.log
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Storage (uploaded files)
+storage/*
