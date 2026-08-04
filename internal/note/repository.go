@@ -1,6 +1,7 @@
 package note
 
 import (
+	"strconv"
 	"time"
 
 	"github.com/haditssoft/haditssoft-backend/internal/shared/database"
@@ -15,19 +16,60 @@ func NewRepository() *Repository {
 	return &Repository{}
 }
 
-func (r *Repository) GetList(bookName string, userID uint) ([]map[string]interface{}, error) {
-	container := []map[string]interface{}{}
-	result := database.DB.Table(bookName+"Note").
-		Select("*").
+var noteTablePrefixes = map[string]string{
+	"bukharinote":       "ShahihBukhari",
+	"muslimnote":        "ShahihMuslim",
+	"tirmidzinote":      "SunanTirmidzi",
+	"abudaudnote":       "SunanAbuDaud",
+	"nasainote":         "SunanNasai",
+	"ibnumajahnote":     "SunanIbnuMajah",
+	"dariminote":        "SunanDarimi",
+	"ahmadnote":         "MusnadAhmad",
+	"maliknote":         "MuwathaMalik",
+	"daruquthninote":    "SunanDaruquthni",
+	"ibnukhuzaimahnote": "ShahihIbnuKhuzaimah",
+	"ibnuhibbannote":    "ShahihIbnuHibban",
+	"mustadraknote":     "AlMustadrak",
+	"syafiinote":        "MusnadSyafii",
+}
+
+func normalizeBookName(bookName string) string {
+	if prefix, ok := noteTablePrefixes[bookName]; ok {
+		return prefix
+	}
+	return bookName
+}
+
+func noteTableName(bookName string) string {
+	return normalizeBookName(bookName) + "Note"
+}
+
+func (r *Repository) GetList(bookName string, userID uint) (map[string]string, error) {
+	type noteRow struct {
+		HadithID uint   `gorm:"column:hadith_id"`
+		Note     string `gorm:"column:note"`
+	}
+
+	rows := []noteRow{}
+	result := database.DB.Table(noteTableName(bookName)).
+		Select("hadith_id, note").
 		Where("user_id = ?", userID).
 		Where("deleted_at IS NULL").
-		Find(&container)
-	return container, result.Error
+		Find(&rows)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+
+	notes := make(map[string]string, len(rows))
+	for _, row := range rows {
+		notes[strconv.FormatUint(uint64(row.HadithID), 10)] = row.Note
+	}
+	return notes, nil
 }
 
 func (r *Repository) GetOne(bookName string, hadithID uint, userID uint) (map[string]interface{}, error) {
 	container := map[string]interface{}{}
-	result := database.DB.Table(bookName+"Note").
+	result := database.DB.Table(noteTableName(bookName)).
 		Select("*").
 		Where("hadith_id = ?", hadithID).
 		Where("user_id = ?", userID).
@@ -38,7 +80,7 @@ func (r *Repository) GetOne(bookName string, hadithID uint, userID uint) (map[st
 
 func (r *Repository) Create(bookName string, hadithID uint, note string, userID uint, path, ip string) error {
 	return database.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Table(bookName + "Note").Create(map[string]interface{}{
+		if err := tx.Table(noteTableName(bookName)).Create(map[string]interface{}{
 			"hadith_id":  hadithID,
 			"note":       note,
 			"user_id":    userID,
@@ -65,7 +107,7 @@ func (r *Repository) Create(bookName string, hadithID uint, note string, userID 
 
 func (r *Repository) Update(bookName string, id uint, hadithID uint, note string, userID uint, path, ip string) error {
 	return database.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Table(bookName+"Note").Where("id = ?", id).Updates(map[string]interface{}{
+		if err := tx.Table(noteTableName(bookName)).Where("id = ?", id).Updates(map[string]interface{}{
 			"hadith_id":  hadithID,
 			"note":       note,
 			"updated_at": time.Now(),
@@ -90,7 +132,7 @@ func (r *Repository) Update(bookName string, id uint, hadithID uint, note string
 
 func (r *Repository) FindNoteIDByHadithAndUser(bookName string, hadithID uint, userID uint) (uint, error) {
 	var noteID uint
-	result := database.DB.Table(bookName+"Note").
+	result := database.DB.Table(noteTableName(bookName)).
 		Select("id").
 		Where("hadith_id = ?", hadithID).
 		Where("user_id = ?", userID).
@@ -102,7 +144,7 @@ func (r *Repository) FindNoteIDByHadithAndUser(bookName string, hadithID uint, u
 
 func (r *Repository) DeleteOne(bookName string, hadithID uint, userID uint, path, ip string) error {
 	return database.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Table(bookName+"Note").
+		if err := tx.Table(noteTableName(bookName)).
 			Where("hadith_id = ?", hadithID).
 			Where("user_id = ?", userID).
 			Where("deleted_at IS NULL").

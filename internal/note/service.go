@@ -20,17 +20,12 @@ func (s *Service) GetList(c *fiber.Ctx, bookName string, userID uint) error {
 		})
 	}
 
-	container, err := s.repo.GetList(bookName, userID)
+	notes, err := s.repo.GetList(bookName, userID)
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
-				"message": "Note not found",
-			})
-		}
 		return err
 	}
 
-	return c.JSON(container)
+	return c.JSON(fiber.Map{"notes": notes})
 }
 
 func (s *Service) GetOne(c *fiber.Ctx, bookName string, hadithID uint, userID uint) error {

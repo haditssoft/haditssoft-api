@@ -19,13 +19,13 @@ func NewHandler(svc *Service) *Handler {
 }
 
 func (h *Handler) GetList(c *fiber.Ctx) error {
-	bookName := c.Params("book_name")
+	bookName := normalizeBookName(c.Params("book_name"))
 	userID := auth.UserID(c)
 	return h.svc.GetList(c, bookName, userID)
 }
 
 func (h *Handler) GetOne(c *fiber.Ctx) error {
-	bookName := c.Params("book_name")
+	bookName := normalizeBookName(c.Params("book_name"))
 	hadithIDStr := c.Params("hadith_id")
 	hadithIDUint, err := strconv.ParseUint(hadithIDStr, 10, 32)
 	if err != nil {
@@ -39,7 +39,7 @@ func (h *Handler) GetOne(c *fiber.Ctx) error {
 
 func (h *Handler) Create(c *fiber.Ctx) error {
 	hadithIDStr := c.Params("hadith_id")
-	bookName := c.Params("book_name")
+	bookName := normalizeBookName(c.Params("book_name"))
 
 	hadithIDUint, err := strconv.ParseUint(hadithIDStr, 10, 32)
 	if err != nil {
@@ -68,7 +68,7 @@ func (h *Handler) Create(c *fiber.Ctx) error {
 
 func (h *Handler) Update(c *fiber.Ctx) error {
 	hadithIDStr := c.Params("hadith_id")
-	bookName := c.Params("book_name")
+	bookName := normalizeBookName(c.Params("book_name"))
 
 	hadithIDUint, err := strconv.ParseUint(hadithIDStr, 10, 32)
 	if err != nil {
@@ -105,7 +105,7 @@ func (h *Handler) Update(c *fiber.Ctx) error {
 
 func (h *Handler) DeleteOne(c *fiber.Ctx) error {
 	hadithIDStr := c.Params("hadith_id")
-	bookName := c.Params("book_name")
+	bookName := normalizeBookName(c.Params("book_name"))
 
 	hadithIDUint, err := strconv.ParseUint(hadithIDStr, 10, 32)
 	if err != nil {
@@ -120,7 +120,7 @@ func (h *Handler) DeleteOne(c *fiber.Ctx) error {
 
 func (h *Handler) ValidateDelete(c *fiber.Ctx) error {
 	hadithIDStr := c.Params("hadith_id")
-	bookName := c.Params("book_name")
+	bookName := normalizeBookName(c.Params("book_name"))
 
 	hadithIDUint, err := strconv.ParseUint(hadithIDStr, 10, 32)
 	if err != nil {

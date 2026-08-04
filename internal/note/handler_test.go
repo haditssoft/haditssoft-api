@@ -94,6 +94,22 @@ func seedNote(t *testing.T, bookName string, hadithID uint, note string, userID 
 	database.DB.Exec(fmt.Sprintf("INSERT INTO %sNote (hadith_id, note, user_id, created_at, updated_at) VALUES (?, ?, ?, datetime('now'), datetime('now'))", bookName), hadithID, note, userID)
 }
 
+func createNoteTable(t *testing.T, tableName string) {
+	t.Helper()
+	createSQL := fmt.Sprintf("CREATE TABLE %s (id INTEGER PRIMARY KEY AUTOINCREMENT, hadith_id INTEGER, note TEXT, user_id INTEGER, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)", tableName)
+	if err := database.DB.Exec(createSQL).Error; err != nil {
+		t.Fatalf("failed to create table %s: %v", tableName, err)
+	}
+}
+
+func createKitabTable(t *testing.T, tableName string) {
+	t.Helper()
+	createSQL := fmt.Sprintf("CREATE TABLE %s (id INTEGER PRIMARY KEY AUTOINCREMENT, Nomer INTEGER)", tableName)
+	if err := database.DB.Exec(createSQL).Error; err != nil {
+		t.Fatalf("failed to create table %s: %v", tableName, err)
+	}
+}
+
 func generateNoteTestToken(t *testing.T, userID uint, email string) string {
 	t.Helper()
 	token, err := auth.GenerateAccessToken(userID, email)
@@ -139,6 +155,16 @@ func decodeNoteJSON(t *testing.T, resp *http.Response, dest interface{}) {
 // GET /notes/:book_name (GetList) tests
 // ============================================================
 
+func decodeNotesResponse(t *testing.T, resp *http.Response) map[string]string {
+	t.Helper()
+	var result map[string]map[string]string
+	decodeNoteJSON(t, resp, &result)
+	if result == nil {
+		t.Fatal("response body is not a JSON object")
+	}
+	return result["notes"]
+}
+
 func TestNoteGetList_Success(t *testing.T) {
 	app := setupNoteTestApp(t)
 	user := seedNoteUser(t, "notelist@example.com")
@@ -153,10 +179,133 @@ func TestNoteGetList_Success(t *testing.T) {
 		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 
-	var result []map[string]interface{}
-	decodeNoteJSON(t, resp, &result)
-	if len(result) != 2 {
-		t.Errorf("got %d notes, want 2", len(result))
+	notes := decodeNotesResponse(t, resp)
+	if len(notes) != 2 {
+		t.Errorf("got %d notes, want 2", len(notes))
+	}
+	if notes["1"] != "First note" {
+		t.Errorf("notes[1] = %q, want 'First note'", notes["1"])
+	}
+	if notes["2"] != "Second note" {
+		t.Errorf("notes[2] = %q, want 'Second note'", notes["2"])
+	}
+}
+
+func TestNoteGetList_ResponseShape(t *testing.T) {
+	app := setupNoteTestApp(t)
+	user := seedNoteUser(t, "listshape@example.com")
+	seedNoteHadith(t, "Muslim", 1)
+	seedNote(t, "Muslim", 1, "Shaped note", user.ID)
+	token := generateNoteTestToken(t, user.ID, user.Email)
+
+	resp := makeNoteRequest(t, app, "GET", "/notes/Muslim", nil, token)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var raw map[string]interface{}
+	decodeNoteJSON(t, resp, &raw)
+	if len(raw) != 1 {
+		t.Errorf("expected exactly 1 top-level key, got %d (%v)", len(raw), raw)
+	}
+	if _, ok := raw["notes"]; !ok {
+		t.Error("response must contain top-level 'notes' key")
+	}
+}
+
+func TestNoteGetList_EmptyForUserWithNoNotes(t *testing.T) {
+	app := setupNoteTestApp(t)
+	user := seedNoteUser(t, "list_empty@example.com")
+	seedNoteHadith(t, "Muslim", 1)
+	token := generateNoteTestToken(t, user.ID, user.Email)
+
+	resp := makeNoteRequest(t, app, "GET", "/notes/Muslim", nil, token)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	notes := decodeNotesResponse(t, resp)
+	if notes == nil {
+		t.Fatal("expected empty 'notes' object, got null")
+	}
+	if len(notes) != 0 {
+		t.Errorf("got %d notes, want 0", len(notes))
+	}
+}
+
+func TestNoteGetList_OnlyReturnsOwnNotes(t *testing.T) {
+	app := setupNoteTestApp(t)
+	userA := seedNoteUser(t, "list_owner_a@example.com")
+	userB := seedNoteUser(t, "list_owner_b@example.com")
+	seedNoteHadith(t, "Muslim", 1)
+	seedNoteHadith(t, "Muslim", 2)
+	seedNoteHadith(t, "Muslim", 3)
+	seedNote(t, "Muslim", 1, "A's first note", userA.ID)
+	seedNote(t, "Muslim", 2, "A's second note", userA.ID)
+	seedNote(t, "Muslim", 3, "B's private note", userB.ID)
+	tokenA := generateNoteTestToken(t, userA.ID, userA.Email)
+
+	resp := makeNoteRequest(t, app, "GET", "/notes/Muslim", nil, tokenA)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	notes := decodeNotesResponse(t, resp)
+	if len(notes) != 2 {
+		t.Fatalf("got %d notes, want 2 (other user's note leaked)", len(notes))
+	}
+	for _, note := range notes {
+		if note == "B's private note" {
+			t.Error("list leaked another user's note content")
+		}
+	}
+}
+
+func TestNoteGetList_ExcludesSoftDeleted(t *testing.T) {
+	app := setupNoteTestApp(t)
+	user := seedNoteUser(t, "listsd@example.com")
+	seedNoteHadith(t, "Muslim", 1)
+	seedNoteHadith(t, "Muslim", 2)
+	seedNote(t, "Muslim", 1, "Active note", user.ID)
+	seedNote(t, "Muslim", 2, "Deleted note", user.ID)
+	database.DB.Exec("UPDATE MuslimNote SET deleted_at = datetime('now') WHERE hadith_id = 2 AND user_id = ?", user.ID)
+	token := generateNoteTestToken(t, user.ID, user.Email)
+
+	resp := makeNoteRequest(t, app, "GET", "/notes/Muslim", nil, token)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	notes := decodeNotesResponse(t, resp)
+	if len(notes) != 1 {
+		t.Fatalf("got %d notes, want 1 (soft-deleted note leaked)", len(notes))
+	}
+	if notes["1"] != "Active note" {
+		t.Errorf("notes[1] = %q, want 'Active note'", notes["1"])
+	}
+	if _, ok := notes["2"]; ok {
+		t.Error("soft-deleted note must not be returned")
+	}
+}
+
+func TestNoteGetList_BookNameAlias(t *testing.T) {
+	app := setupNoteTestApp(t)
+	user := seedNoteUser(t, "listalias@example.com")
+	createNoteTable(t, "SunanDarimiNote")
+	seedNote(t, "SunanDarimi", 5, "Alias note", user.ID)
+	token := generateNoteTestToken(t, user.ID, user.Email)
+
+	resp := makeNoteRequest(t, app, "GET", "/notes/dariminote", nil, token)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	notes := decodeNotesResponse(t, resp)
+	if len(notes) != 1 {
+		t.Fatalf("got %d notes, want 1", len(notes))
+	}
+	if notes["5"] != "Alias note" {
+		t.Errorf("notes[5] = %q, want 'Alias note'", notes["5"])
 	}
 }
 
@@ -187,50 +336,41 @@ func TestNoteGetList_InvalidJWT(t *testing.T) {
 	}
 }
 
-func TestNoteGetList_OnlyReturnsOwnNotes(t *testing.T) {
+func TestNoteGetList_NonexistentTable(t *testing.T) {
 	app := setupNoteTestApp(t)
-	userA := seedNoteUser(t, "list_owner_a@example.com")
-	userB := seedNoteUser(t, "list_owner_b@example.com")
-	seedNoteHadith(t, "Muslim", 1)
-	seedNoteHadith(t, "Muslim", 2)
-	seedNoteHadith(t, "Muslim", 3)
-	seedNote(t, "Muslim", 1, "A's first note", userA.ID)
-	seedNote(t, "Muslim", 2, "A's second note", userA.ID)
-	seedNote(t, "Muslim", 3, "B's private note", userB.ID)
-	tokenA := generateNoteTestToken(t, userA.ID, userA.Email)
+	user := seedNoteUser(t, "listnotbl@example.com")
+	token := generateNoteTestToken(t, user.ID, user.Email)
 
-	resp := makeNoteRequest(t, app, "GET", "/notes/Muslim", nil, tokenA)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-
-	var result []map[string]interface{}
-	decodeNoteJSON(t, resp, &result)
-	if len(result) != 2 {
-		t.Fatalf("got %d notes, want 2 (other user's note leaked)", len(result))
-	}
-	for _, row := range result {
-		if row["note"] == "B's private note" {
-			t.Error("list leaked another user's note content")
-		}
+	resp := makeNoteRequest(t, app, "GET", "/notes/DoesNotExist", nil, token)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusInternalServerError)
 	}
 }
 
-func TestNoteGetList_EmptyForUserWithNoNotes(t *testing.T) {
-	app := setupNoteTestApp(t)
-	user := seedNoteUser(t, "list_empty@example.com")
-	seedNoteHadith(t, "Muslim", 1)
-	token := generateNoteTestToken(t, user.ID, user.Email)
-
-	resp := makeNoteRequest(t, app, "GET", "/notes/Muslim", nil, token)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+func TestNoteTableName(t *testing.T) {
+	cases := map[string]string{
+		"ShahihBukhari":     "ShahihBukhariNote",
+		"bukharinote":       "ShahihBukhariNote",
+		"muslimnote":        "ShahihMuslimNote",
+		"tirmidzinote":      "SunanTirmidziNote",
+		"abudaudnote":       "SunanAbuDaudNote",
+		"nasainote":         "SunanNasaiNote",
+		"ibnumajahnote":     "SunanIbnuMajahNote",
+		"dariminote":        "SunanDarimiNote",
+		"ahmadnote":         "MusnadAhmadNote",
+		"maliknote":         "MuwathaMalikNote",
+		"daruquthninote":    "SunanDaruquthniNote",
+		"ibnukhuzaimahnote": "ShahihIbnuKhuzaimahNote",
+		"ibnuhibbannote":    "ShahihIbnuHibbanNote",
+		"mustadraknote":     "AlMustadrakNote",
+		"syafiinote":        "MusnadSyafiiNote",
+		"Muslim":            "MuslimNote",
+		"SunanDarimi":       "SunanDarimiNote",
 	}
-
-	var result []map[string]interface{}
-	decodeNoteJSON(t, resp, &result)
-	if len(result) != 0 {
-		t.Errorf("got %d notes, want 0", len(result))
+	for in, want := range cases {
+		if got := noteTableName(in); got != want {
+			t.Errorf("noteTableName(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 
@@ -330,6 +470,25 @@ func TestNoteGetOne_SameHadithDistinctUsers(t *testing.T) {
 	}
 }
 
+func TestNoteGetOne_WithBookAlias(t *testing.T) {
+	app := setupNoteTestApp(t)
+	user := seedNoteUser(t, "onealias@example.com")
+	createNoteTable(t, "MusnadAhmadNote")
+	seedNote(t, "MusnadAhmad", 9, "Alias one note", user.ID)
+	token := generateNoteTestToken(t, user.ID, user.Email)
+
+	resp := makeNoteRequest(t, app, "GET", "/notes/ahmadnote/9", nil, token)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var result map[string]interface{}
+	decodeNoteJSON(t, resp, &result)
+	if result["note"] != "Alias one note" {
+		t.Errorf("note = %v, want 'Alias one note'", result["note"])
+	}
+}
+
 // ============================================================
 // POST /notes/:book_name/:hadith_id (Create) tests
 // ============================================================
@@ -346,6 +505,27 @@ func TestNoteCreate_Success(t *testing.T) {
 	resp := makeNoteRequest(t, app, "POST", "/notes/Muslim/10", body, token)
 	if resp.StatusCode != http.StatusNoContent {
 		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusNoContent)
+	}
+}
+
+func TestNoteCreate_WithBookAlias(t *testing.T) {
+	app := setupNoteTestApp(t)
+	user := seedNoteUser(t, "createalias@example.com")
+	createKitabTable(t, "SunanDarimi")
+	seedNoteHadith(t, "SunanDarimi", 7)
+	createNoteTable(t, "SunanDarimiNote")
+	token := generateNoteTestToken(t, user.ID, user.Email)
+
+	body := map[string]interface{}{"note": "Alias created note"}
+	resp := makeNoteRequest(t, app, "POST", "/notes/dariminote/7", body, token)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNoContent)
+	}
+
+	var count int
+	database.DB.Raw("SELECT COUNT(*) FROM SunanDarimiNote WHERE hadith_id = 7 AND deleted_at IS NULL").Scan(&count)
+	if count != 1 {
+		t.Errorf("expected 1 note in SunanDarimiNote, got %d", count)
 	}
 }
 
