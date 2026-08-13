@@ -105,6 +105,38 @@ func TestRunMigrations_Idempotent(t *testing.T) {
 	}
 }
 
+func TestRunMigrations_CreatesTranslationSettingTable(t *testing.T) {
+	origDB := DB
+	DB = setupMigrationTestDB(t)
+	t.Cleanup(func() { DB = origDB })
+
+	os.Setenv("ADMIN_EMAIL", "tsadmin@example.com")
+	os.Setenv("ADMIN_PASSWORD", "MyS3cur3P@ss!")
+	t.Cleanup(func() {
+		os.Unsetenv("ADMIN_EMAIL")
+		os.Unsetenv("ADMIN_PASSWORD")
+	})
+
+	RunMigrations()
+
+	if !DB.Migrator().HasTable("TranslationSetting") {
+		t.Fatal("TranslationSetting table should be created by RunMigrations")
+	}
+
+	setting := entities.TranslationSetting{UserID: 1, Language: "English"}
+	if err := DB.Create(&setting).Error; err != nil {
+		t.Fatalf("failed to insert into TranslationSetting: %v", err)
+	}
+
+	var loaded entities.TranslationSetting
+	if err := DB.Where("user_id = ?", 1).First(&loaded).Error; err != nil {
+		t.Fatalf("failed to read TranslationSetting row: %v", err)
+	}
+	if loaded.Language != "English" {
+		t.Errorf("language = %q, want 'English'", loaded.Language)
+	}
+}
+
 func TestRunMigrations_PanicsWithoutAdminEmail(t *testing.T) {
 	origDB := DB
 	DB = setupMigrationTestDB(t)

@@ -16,6 +16,7 @@ func RunMigrations() {
 		&entities.Activity{},
 		&entities.BlacklistToken{},
 		&entities.RefreshToken{},
+		&entities.TranslationSetting{},
 	)
 
 	email := os.Getenv("ADMIN_EMAIL")

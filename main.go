@@ -20,6 +20,7 @@ import (
 	"github.com/haditssoft/haditssoft-backend/internal/shared/utils"
 	"github.com/haditssoft/haditssoft-backend/internal/shared/validator"
 	"github.com/haditssoft/haditssoft-backend/internal/theme"
+	"github.com/haditssoft/haditssoft-backend/internal/translationsetting"
 	"github.com/haditssoft/haditssoft-backend/internal/user"
 
 	"github.com/gofiber/fiber/v2"
@@ -104,6 +105,11 @@ func main() {
 	smSvc := searchmode.NewService(smRepo)
 	smHandler := searchmode.NewHandler(smSvc)
 	searchmode.RegisterRoutes(v1, smHandler)
+
+	tsRepo := translationsetting.NewRepository()
+	tsSvc := translationsetting.NewService(tsRepo)
+	tsHandler := translationsetting.NewHandler(tsSvc)
+	translationsetting.RegisterRoutes(v1, tsHandler)
 
 	lrRepo := lastread.NewRepository()
 	lrSvc := lastread.NewService(lrRepo)

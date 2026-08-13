@@ -9,6 +9,9 @@ type ClassificationData struct {
 	Nomer       string      `json:"Nomer"`
 	Arabic      string      `json:"Arabic"`
 	Indonesia   string      `json:"Indonesia"`
+	English     string      `json:"English"`
+	Urdu        string      `json:"Urdu"`
+	Bengali     string      `json:"Bengali"`
 	Albani      string      `json:"Albani"`
 	Darussalam  string      `json:"Darussalam"`
 	VSelectedK  uint        `json:"VSelectedK"`
@@ -25,6 +28,9 @@ func LoadClassificationData(kitab, classify, number string) (ClassificationData,
 		"Nomer",
 		"Arabic",
 		"Indonesia",
+		"English",
+		"Urdu",
+		"Bengali",
 		"Albani",
 		"Darussalam",
 		"VSelectedK",
