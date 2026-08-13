@@ -582,22 +582,23 @@ func TestTranslate_NoMatchingRows(t *testing.T) {
 
 func TestTranslate_SystemPromptBoundaries(t *testing.T) {
 	phrases := []string{
-		"source of truth",
+		"primary and authoritative source of truth",
 		"Indonesia",
 		"reference",
 		"bracket",
-		"dalil",
-		"search",
-		"Output ONLY the English translation",
+		"Output only the English translation",
 		"Arabic",
 		"isnad",
 		"sanad",
-		"book name",
+		"book/collection name",
 		"hadith number",
-		"chain of narrators",
-		"not a summary",
+		"never summarize",
 		"entire",
 		"matan",
+		"transliterate",
+		"external",
+		"ambiguity",
+		"contextual accuracy",
 	}
 	for _, phrase := range phrases {
 		if !strings.Contains(strings.ToLower(translationSystemMessage), strings.ToLower(phrase)) {
