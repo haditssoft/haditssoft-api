@@ -179,6 +179,6 @@ Two search strategies available, frontend chooses which to call:
 - Cron-only: guarded by `OPENCODE_CRON_KEY` env var passed as `?key=` query param (constant-time compare, `401` if missing/wrong) — NOT JWT-protected
 - `kitabName` must be in `models.GetIndexOfKitab` whitelist (`400` otherwise)
 - Selects rows where `English IS NULL OR English = ''`, ordered by `Nomer`, limited by `?limit=` (default 10, must be ≥ 1)
-- For each row sequentially: sends Arabic + Indonesian to opencode with the `translationSystemMessage` system prompt (Arabic = source of truth, Indonesian = reference only), then writes the returned English back via `UPDATE`
-- Per-record LLM/db failures are collected, the batch continues
+- For each row sequentially: sends Arabic + Indonesian to opencode with the `translationSystemMessage` system prompt (Arabic = source of truth, Indonesian = reference only; the full hadith incl. book name, number, and isnad/sanad must be translated, not just the matan, and not summarized), then writes the returned English back via `UPDATE`
+- Per-record LLM/db failures are collected, the batch continues; empty/whitespace LLM replies are counted as failed (not written back)
 - Response: `{"processed": n, "updated": m, "failed": [{"nomer": x, "error": "..."}]}`

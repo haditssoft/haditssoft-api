@@ -18,6 +18,7 @@ type translateMockConfig struct {
 	failMessageAt    int // 1-based exact message call index to fail; 0 = none
 	failEverySession bool
 	failEveryMessage bool
+	replyOverrides   map[int]string // 1-based message index -> text to return instead of "translated-N"
 }
 
 // setupTranslateMock spins up a mock opencode serve that records every message
@@ -49,9 +50,13 @@ func setupTranslateMock(t *testing.T, cfg translateMockConfig) (*httptest.Server
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
+			text := fmt.Sprintf("translated-%d", msgCount)
+			if override, ok := cfg.replyOverrides[msgCount]; ok {
+				text = override
+			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]interface{}{
-				"parts": []map[string]string{{"type": "text", "text": fmt.Sprintf("translated-%d", msgCount)}},
+				"parts": []map[string]string{{"type": "text", "text": text}},
 			})
 
 		case strings.HasPrefix(r.URL.Path, "/session/") && r.Method == http.MethodDelete:
@@ -431,6 +436,84 @@ func TestTranslate_LLMFailureContinues(t *testing.T) {
 	assertEnglish(t, 3, "translated-2")
 }
 
+func TestTranslate_EmptyReplyCountedAsFailed(t *testing.T) {
+	setCronKey(t, "correct-secret")
+	srv, _ := setupTranslateMock(t, translateMockConfig{replyOverrides: map[int]string{1: ""}})
+	os.Setenv("OPENCODE_URL", srv.URL)
+	t.Cleanup(func() { os.Unsetenv("OPENCODE_URL") })
+
+	app := setupTestApp(t)
+	seedShahihBukhari(t, []map[string]interface{}{
+		{"Nomer": 1, "Arabic": "hadith one", "Indonesia": "terjemah satu", "English": nil},
+		{"Nomer": 2, "Arabic": "hadith two", "Indonesia": "terjemah dua", "English": nil},
+	})
+
+	resp := makeRequest(t, app, "POST", "/ai/cron/translate/ShahihBukhari?key=correct-secret", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var body translateResponse
+	decodeJSON(t, resp, &body)
+	if body.Processed != 2 {
+		t.Errorf("processed = %d, want 2", body.Processed)
+	}
+	if body.Updated != 1 {
+		t.Errorf("updated = %d, want 1", body.Updated)
+	}
+	if len(body.Failed) != 1 {
+		t.Fatalf("failed = %v, want 1 entry", body.Failed)
+	}
+	if body.Failed[0].Nomer != 1 {
+		t.Errorf("failed nomer = %d, want 1", body.Failed[0].Nomer)
+	}
+	if body.Failed[0].Error != "empty AI response" {
+		t.Errorf("failed error = %q, want 'empty AI response'", body.Failed[0].Error)
+	}
+
+	assertEnglishEmpty(t, 1)
+	assertEnglish(t, 2, "translated-2")
+}
+
+func TestTranslate_WhitespaceReplyCountedAsFailed(t *testing.T) {
+	setCronKey(t, "correct-secret")
+	srv, _ := setupTranslateMock(t, translateMockConfig{replyOverrides: map[int]string{1: "   "}})
+	os.Setenv("OPENCODE_URL", srv.URL)
+	t.Cleanup(func() { os.Unsetenv("OPENCODE_URL") })
+
+	app := setupTestApp(t)
+	seedShahihBukhari(t, []map[string]interface{}{
+		{"Nomer": 1, "Arabic": "hadith one", "Indonesia": "terjemah satu", "English": nil},
+		{"Nomer": 2, "Arabic": "hadith two", "Indonesia": "terjemah dua", "English": nil},
+	})
+
+	resp := makeRequest(t, app, "POST", "/ai/cron/translate/ShahihBukhari?key=correct-secret", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var body translateResponse
+	decodeJSON(t, resp, &body)
+	if body.Processed != 2 {
+		t.Errorf("processed = %d, want 2", body.Processed)
+	}
+	if body.Updated != 1 {
+		t.Errorf("updated = %d, want 1", body.Updated)
+	}
+	if len(body.Failed) != 1 {
+		t.Fatalf("failed = %v, want 1 entry", body.Failed)
+	}
+	if body.Failed[0].Nomer != 1 {
+		t.Errorf("failed nomer = %d, want 1", body.Failed[0].Nomer)
+	}
+	if body.Failed[0].Error != "empty AI response" {
+		t.Errorf("failed error = %q, want 'empty AI response'", body.Failed[0].Error)
+	}
+
+	assertEnglishEmpty(t, 1)
+	assertEnglish(t, 2, "translated-2")
+}
+
 func TestTranslate_SessionCreationFailure(t *testing.T) {
 	setCronKey(t, "correct-secret")
 	srv, msgBodies := setupTranslateMock(t, translateMockConfig{failEverySession: true}) // every session creation fails
@@ -507,6 +590,14 @@ func TestTranslate_SystemPromptBoundaries(t *testing.T) {
 		"search",
 		"Output ONLY the English translation",
 		"Arabic",
+		"isnad",
+		"sanad",
+		"book name",
+		"hadith number",
+		"chain of narrators",
+		"not a summary",
+		"entire",
+		"matan",
 	}
 	for _, phrase := range phrases {
 		if !strings.Contains(strings.ToLower(translationSystemMessage), strings.ToLower(phrase)) {

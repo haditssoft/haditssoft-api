@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/haditssoft/haditssoft-backend/internal/shared/database"
 	"github.com/haditssoft/haditssoft-backend/models"
@@ -16,6 +17,10 @@ const translationSystemMessage = `You are an expert Islamic scholar (ulama) spec
 
 TASK:
 Translate the hadith into English. The ARABIC text is the main source and the only source of truth — translate it faithfully and accurately.
+
+TRANSLATE EVERYTHING:
+- Translate the ENTIRE hadith — every single word — including the book name, the hadith number, and the full chain of narrators (isnad/sanad), not just the main text (matan).
+- This is a complete translation, not a summary. Do not summarize, compress, or skip any part of the text.
 
 IMPORTANT RULES:
 - The Indonesian text is ONLY a reference to help you understand the context. It is NOT the source of truth and it may be incorrect. Always prioritize the meaning of the Arabic text over the Indonesian text.
@@ -147,6 +152,12 @@ func TranslateHadiths(c *fiber.Ctx) error {
 
 		if err := deleteOpenCodeSession(baseURL, sessionID); err != nil {
 			log.Println("translate session delete error:", err)
+		}
+
+		if strings.TrimSpace(reply) == "" {
+			log.Println("translate empty reply:", row.Nomer)
+			failed = append(failed, translateResult{Nomer: row.Nomer, Error: "empty AI response"})
+			continue
 		}
 
 		if err := database.DB.Table(kitabName).
