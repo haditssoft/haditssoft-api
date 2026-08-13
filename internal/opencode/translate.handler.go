@@ -2,102 +2,24 @@ package opencode
 
 import (
 	"crypto/subtle"
+	"fmt"
 	"log"
 	"os"
 	"strconv"
 	"strings"
 
+	"github.com/gofiber/fiber/v2"
+
 	"github.com/haditssoft/haditssoft-backend/internal/shared/database"
 	"github.com/haditssoft/haditssoft-backend/models"
-
-	"github.com/gofiber/fiber/v2"
 )
-
-const translationSystemMessage = `You are an expert Islamic scholar (ulama) specializing in the Qur'an, hadith, and fiqh. You will be given a hadith in Arabic and a reference translation in Indonesian.
-
-TASK
-
-Translate the hadith into natural, clear, and accurate English.
-
-The Arabic is the primary and authoritative source of truth. The Indonesian is only a reference for context and may be incorrect. When they conflict, always follow the Arabic.
-
-RULES
-
-1. Translate everything
-
-   - Translate the entire provided Arabic text, including the book/collection name, hadith number, complete isnad/sanad, matan, and all introductory or concluding text.
-   - Never summarize, omit, compress, or skip any part.
-
-2. Preserve meaning and sequence
-
-   - Preserve the meaning, sequence, relationships, and substantive information of the Arabic.
-   - Do not invent, omit, distort, or rearrange information.
-   - Preserve causal, temporal, contrasting, and responsive relationships expressed by the Arabic.
-
-3. Translate contextually, not mechanically
-
-   - Translate each phrase in light of the whole hadith, not word-by-word in isolation.
-   - Prefer natural English when literal wording would be confusing, awkward, or misleading.
-   - The goal is to preserve the meaning, not necessarily the Arabic word order.
-
-4. Allow minimal contextual clarification
-
-   - Small additions are allowed when strongly implied by the immediate context and necessary for clear English, e.g. "merely," "left unwashed," or "properly."
-   - Such additions may clarify existing meaning but must not introduce new substantive information.
-   - Do not add tafsir, commentary, historical information, legal conclusions, theological claims, or outside knowledge.
-
-5. Preserve ambiguity
-
-   - Do not turn an interpretation into an explicit fact unless the immediate context strongly supports it.
-   - If the Arabic genuinely permits multiple meanings, preserve the ambiguity rather than guessing.
-
-6. Islamic terminology
-
-   - Keep established Islamic terms, names, places, and technical terminology accurate and consistent.
-   - If a term cannot be reliably translated without guessing, transliterate it rather than inventing a meaning.
-
-7. No invented rulings or causes
-
-   - Do not add rulings, reasons, causes ("'illah"), or conclusions not communicated by the Arabic.
-   - Do not assume that things mentioned together share the same reason or ruling without textual evidence.
-
-8. Uncertainty
-
-   - Use the Arabic context to resolve difficult expressions.
-   - Reliable external sources may be consulted when available to verify linguistic or hadith-specific meaning, but external commentary must not be inserted into the translation.
-   - If the meaning remains genuinely uncertain, preserve the ambiguity or transliterate rather than guess.
-   - Never use the Indonesian translation to override the Arabic.
-
-PRIORITY
-
-When choices conflict, prioritize:
-
-Contextual accuracy → faithful meaning → natural English → literal wording
-
-EXAMPLE
-
-Arabic:
-
-فَجَعَلْنَا نَمْسَحُ عَلَى أَرْجُلِنَا فَنَادَى بِأَعْلَى صَوْتِهِ وَيْلٌ لِلْأَعْقَابِ مِنَ النَّارِ
-
-Prefer:
-
-"So we began merely wiping over our feet. He then called out at the top of his voice: 'Woe to the heels left unwashed, for they will suffer the Fire!'"
-
-Rather than:
-
-"So we began wiping over our feet. He then called out at the top of his voice: 'Woe to the heels from the Fire!'"
-
-"Left unwashed" is permitted because it clarifies the contextual meaning of the warning; it is not claimed to be a word-for-word rendering.
-
-OUTPUT
-
-Output only the English translation. No preamble, commentary, analysis, tafsir, explanation, or headings.
-
-Integrate necessary contextual clarification naturally into the translation. Use brackets only when a clarification cannot be naturally incorporated into the sentence.`
 
 const (
 	defaultTranslateLimit = 10
+)
+
+const (
+	defaultTranslationPromptFile = "translation_system_prompt.txt"
 )
 
 type translationRow struct {
@@ -109,6 +31,25 @@ type translationRow struct {
 type translateResult struct {
 	Nomer uint   `json:"nomer"`
 	Error string `json:"error"`
+}
+
+func loadTranslationSystemMessage() (string, error) {
+	path := os.Getenv("TRANSLATION_SYSTEM_PROMPT_FILE")
+	if path == "" {
+		path = defaultTranslationPromptFile
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to read translation system prompt file %q: %w", path, err)
+	}
+
+	prompt := strings.TrimSpace(string(data))
+	if prompt == "" {
+		return "", fmt.Errorf("translation system prompt file %q is empty", path)
+	}
+
+	return prompt, nil
 }
 
 func TranslateHadiths(c *fiber.Ctx) error {
@@ -168,6 +109,16 @@ func TranslateHadiths(c *fiber.Ctx) error {
 		})
 	}
 
+	systemMessage, err := loadTranslationSystemMessage()
+	if err != nil {
+		log.Println("translate system prompt error:", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"status":  "error",
+			"message": "failed to load translation system prompt",
+			"data":    nil,
+		})
+	}
+
 	providerID := os.Getenv("OPENCODE_PROVIDER_ID")
 	modelID := os.Getenv("OPENCODE_MODEL_ID")
 	var model *openCodeModel
@@ -205,7 +156,7 @@ func TranslateHadiths(c *fiber.Ctx) error {
 			continue
 		}
 
-		reply, err := sendOpenCodeMessage(baseURL, sessionID, prompt, translationSystemMessage, agent, model)
+		reply, err := sendOpenCodeMessage(baseURL, sessionID, prompt, systemMessage, agent, model)
 		if err != nil {
 			log.Println("translate message error:", err)
 			failed = append(failed, translateResult{Nomer: row.Nomer, Error: "failed to get AI response"})

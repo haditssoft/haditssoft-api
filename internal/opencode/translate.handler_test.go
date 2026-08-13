@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -25,6 +26,8 @@ type translateMockConfig struct {
 // request body. Failures are controlled by cfg (see translateMockConfig).
 func setupTranslateMock(t *testing.T, cfg translateMockConfig) (*httptest.Server, *[][]byte) {
 	t.Helper()
+
+	setTranslationPromptFile(t)
 
 	var msgBodies [][]byte
 	var sessionCount, msgCount int
@@ -96,6 +99,30 @@ func setCronKey(t *testing.T, key string) {
 	t.Helper()
 	os.Setenv("OPENCODE_CRON_KEY", key)
 	t.Cleanup(func() { os.Unsetenv("OPENCODE_CRON_KEY") })
+}
+
+// repoRootPromptPath resolves the repo-root translation_system_prompt.txt
+// relative to this package dir (tests always run with cwd = package dir).
+func repoRootPromptPath(t *testing.T) string {
+	t.Helper()
+	return filepath.Join("..", "..", "translation_system_prompt.txt")
+}
+
+func setTranslationPromptFile(t *testing.T) {
+	t.Helper()
+	os.Setenv("TRANSLATION_SYSTEM_PROMPT_FILE", repoRootPromptPath(t))
+	t.Cleanup(func() { os.Unsetenv("TRANSLATION_SYSTEM_PROMPT_FILE") })
+}
+
+// loadPromptForTest reads and trims the repo-root prompt file, mirroring how
+// the production loader normalizes the file contents.
+func loadPromptForTest(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile(repoRootPromptPath(t))
+	if err != nil {
+		t.Fatalf("failed to read repo-root prompt file: %v", err)
+	}
+	return strings.TrimSpace(string(data))
 }
 
 func seedShahihBukhari(t *testing.T, rows []map[string]interface{}) {
@@ -298,8 +325,8 @@ func TestTranslate_SuccessUpdatesEnglish(t *testing.T) {
 	if err := json.Unmarshal(bodies[0], &first); err != nil {
 		t.Fatalf("failed to decode captured body: %v", err)
 	}
-	if sys, _ := first["system"].(string); sys != translationSystemMessage {
-		t.Error("system prompt sent to opencode does not match translationSystemMessage")
+	if sys, _ := first["system"].(string); sys != loadPromptForTest(t) {
+		t.Error("system prompt sent to opencode does not match the translation prompt file")
 	}
 	prompt := extractPromptText(t, bodies[0])
 	if !strings.Contains(prompt, "Teks Arab:\nhadith one arabic") {
@@ -601,8 +628,116 @@ func TestTranslate_SystemPromptBoundaries(t *testing.T) {
 		"contextual accuracy",
 	}
 	for _, phrase := range phrases {
-		if !strings.Contains(strings.ToLower(translationSystemMessage), strings.ToLower(phrase)) {
+		if !strings.Contains(strings.ToLower(loadPromptForTest(t)), strings.ToLower(phrase)) {
 			t.Errorf("system prompt missing boundary phrase %q", phrase)
+		}
+	}
+}
+
+func TestTranslate_MissingPromptFile(t *testing.T) {
+	setCronKey(t, "correct-secret")
+	srv, _ := setupTranslateMock(t, translateMockConfig{})
+	os.Setenv("OPENCODE_URL", srv.URL)
+	t.Cleanup(func() { os.Unsetenv("OPENCODE_URL") })
+
+	os.Setenv("TRANSLATION_SYSTEM_PROMPT_FILE", filepath.Join(t.TempDir(), "does-not-exist.txt"))
+	t.Cleanup(func() { os.Unsetenv("TRANSLATION_SYSTEM_PROMPT_FILE") })
+
+	app := setupTestApp(t)
+	seedShahihBukhari(t, []map[string]interface{}{
+		{"Nomer": 1, "Arabic": "hadith one", "Indonesia": "terjemah satu", "English": nil},
+	})
+
+	resp := makeRequest(t, app, "POST", "/ai/cron/translate/ShahihBukhari?key=correct-secret", nil)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusInternalServerError)
+	}
+
+	var body map[string]interface{}
+	decodeJSON(t, resp, &body)
+	if body["status"] != "error" {
+		t.Errorf("status = %v, want 'error'", body["status"])
+	}
+	if body["message"] != "failed to load translation system prompt" {
+		t.Errorf("message = %v, want 'failed to load translation system prompt'", body["message"])
+	}
+}
+
+func TestTranslate_EmptyPromptFile(t *testing.T) {
+	setCronKey(t, "correct-secret")
+	promptPath := filepath.Join(t.TempDir(), "empty.txt")
+	if err := os.WriteFile(promptPath, []byte("   \n\t \n"), 0o644); err != nil {
+		t.Fatalf("failed to write empty prompt file: %v", err)
+	}
+
+	srv, _ := setupTranslateMock(t, translateMockConfig{})
+	os.Setenv("OPENCODE_URL", srv.URL)
+	t.Cleanup(func() { os.Unsetenv("OPENCODE_URL") })
+
+	os.Setenv("TRANSLATION_SYSTEM_PROMPT_FILE", promptPath)
+	t.Cleanup(func() { os.Unsetenv("TRANSLATION_SYSTEM_PROMPT_FILE") })
+
+	app := setupTestApp(t)
+	seedShahihBukhari(t, []map[string]interface{}{
+		{"Nomer": 1, "Arabic": "hadith one", "Indonesia": "terjemah satu", "English": nil},
+	})
+
+	resp := makeRequest(t, app, "POST", "/ai/cron/translate/ShahihBukhari?key=correct-secret", nil)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusInternalServerError)
+	}
+
+	var body map[string]interface{}
+	decodeJSON(t, resp, &body)
+	if body["message"] != "failed to load translation system prompt" {
+		t.Errorf("message = %v, want 'failed to load translation system prompt'", body["message"])
+	}
+}
+
+func TestTranslate_PromptReloadedEachRun(t *testing.T) {
+	setCronKey(t, "correct-secret")
+
+	promptPath := filepath.Join(t.TempDir(), "prompt.txt")
+	if err := os.WriteFile(promptPath, []byte("PROMPT-VERSION-ONE"), 0o644); err != nil {
+		t.Fatalf("failed to write prompt file: %v", err)
+	}
+
+	srv, msgBodies := setupTranslateMock(t, translateMockConfig{})
+	os.Setenv("OPENCODE_URL", srv.URL)
+	t.Cleanup(func() { os.Unsetenv("OPENCODE_URL") })
+
+	os.Setenv("TRANSLATION_SYSTEM_PROMPT_FILE", promptPath)
+	t.Cleanup(func() { os.Unsetenv("TRANSLATION_SYSTEM_PROMPT_FILE") })
+
+	app := setupTestApp(t)
+	seedShahihBukhari(t, []map[string]interface{}{
+		{"Nomer": 1, "Arabic": "hadith one", "Indonesia": "terjemah satu", "English": nil},
+		{"Nomer": 2, "Arabic": "hadith two", "Indonesia": "terjemah dua", "English": nil},
+	})
+
+	if resp := makeRequest(t, app, "POST", "/ai/cron/translate/ShahihBukhari?key=correct-secret&limit=1", nil); resp.StatusCode != http.StatusOK {
+		t.Errorf("first run status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	if err := os.WriteFile(promptPath, []byte("PROMPT-VERSION-TWO"), 0o644); err != nil {
+		t.Fatalf("failed to update prompt file: %v", err)
+	}
+
+	if resp := makeRequest(t, app, "POST", "/ai/cron/translate/ShahihBukhari?key=correct-secret&limit=1", nil); resp.StatusCode != http.StatusOK {
+		t.Errorf("second run status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	bodies := *msgBodies
+	if len(bodies) != 2 {
+		t.Fatalf("got %d message requests, want 2", len(bodies))
+	}
+	for i, want := range []string{"PROMPT-VERSION-ONE", "PROMPT-VERSION-TWO"} {
+		var msg map[string]interface{}
+		if err := json.Unmarshal(bodies[i], &msg); err != nil {
+			t.Fatalf("failed to decode captured body %d: %v", i, err)
+		}
+		if sys, _ := msg["system"].(string); sys != want {
+			t.Errorf("message %d system = %q, want %q (prompt must reload per run)", i, sys, want)
 		}
 	}
 }
