@@ -173,3 +173,12 @@ Two search strategies available, frontend chooses which to call:
 - `books` is required (400 if missing/empty)
 - Uses `searchOneKitab` helper which dispatches to `singleKeywordSearch`, `multiKeywordLikeSearch`, or `indonesiaFTSearch` based on keyword count
 - DB pool: `SetMaxOpenConns(10)` + WAL mode enables concurrent reads
+
+### Cron Endpoint (translate missing English)
+- `POST /ai/cron/translate/:kitabName?key=<OPENCODE_CRON_KEY>&limit=10`
+- Cron-only: guarded by `OPENCODE_CRON_KEY` env var passed as `?key=` query param (constant-time compare, `401` if missing/wrong) — NOT JWT-protected
+- `kitabName` must be in `models.GetIndexOfKitab` whitelist (`400` otherwise)
+- Selects rows where `English IS NULL OR English = ''`, ordered by `Nomer`, limited by `?limit=` (default 10, must be ≥ 1)
+- For each row sequentially: sends Arabic + Indonesian to opencode with the `translationSystemMessage` system prompt (Arabic = source of truth, Indonesian = reference only), then writes the returned English back via `UPDATE`
+- Per-record LLM/db failures are collected, the batch continues
+- Response: `{"processed": n, "updated": m, "failed": [{"nomer": x, "error": "..."}]}`
