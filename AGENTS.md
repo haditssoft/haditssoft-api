@@ -179,8 +179,7 @@ Two search strategies available, frontend chooses which to call:
 - Cron-only: guarded by `OPENCODE_CRON_KEY` env var passed as `?key=` query param (constant-time compare, `401` if missing/wrong) — NOT JWT-protected
 - `kitabName` must be in `models.GetIndexOfKitab` whitelist (`400` otherwise)
 - Selects rows where `English IS NULL OR English = ''`, ordered by `Nomer`, limited by `?limit=` (default 10, must be ≥ 1)
-- For each row sequentially: sends Arabic + Indonesian to opencode with the translation system prompt loaded from `translation_system_prompt.txt`, then writes the returned English back via `UPDATE`
-- The system prompt lives in the repo-root text file `translation_system_prompt.txt` so it can be edited without touching code. Path is overridable via `TRANSLATION_SYSTEM_PROMPT_FILE` env var (default `./translation_system_prompt.txt` relative to working directory)
-- The file is re-read on every cron run, so edits apply immediately without recompiling/restarting. A missing, unreadable, or empty prompt file makes the endpoint fail with `500`
-- Per-record LLM/db failures are collected, the batch continues; empty/whitespace LLM replies are counted as failed (not written back)
+- For each row sequentially: runs `opencode run --format json --agent translate` with the Arabic+Indonesian prompt, parses NDJSON response for text events, writes the returned English back via `UPDATE`
+- Translation instructions are defined in `.opencode/agents/translate.md` (automatically loaded by `--agent translate`)
+- Per-record CLI/db failures are collected, the batch continues; empty/whitespace CLI replies are counted as failed (not written back)
 - Response: `{"processed": n, "updated": m, "failed": [{"nomer": x, "error": "..."}]}`

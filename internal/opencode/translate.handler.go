@@ -2,7 +2,6 @@ package opencode
 
 import (
 	"crypto/subtle"
-	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -18,10 +17,6 @@ const (
 	defaultTranslateLimit = 10
 )
 
-const (
-	defaultTranslationPromptFile = "translation_system_prompt.txt"
-)
-
 type translationRow struct {
 	Nomer     uint
 	Arabic    *string
@@ -31,25 +26,6 @@ type translationRow struct {
 type translateResult struct {
 	Nomer uint   `json:"nomer"`
 	Error string `json:"error"`
-}
-
-func loadTranslationSystemMessage() (string, error) {
-	path := os.Getenv("TRANSLATION_SYSTEM_PROMPT_FILE")
-	if path == "" {
-		path = defaultTranslationPromptFile
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("failed to read translation system prompt file %q: %w", path, err)
-	}
-
-	prompt := strings.TrimSpace(string(data))
-	if prompt == "" {
-		return "", fmt.Errorf("translation system prompt file %q is empty", path)
-	}
-
-	return prompt, nil
 }
 
 func TranslateHadiths(c *fiber.Ctx) error {
@@ -100,25 +76,6 @@ func TranslateHadiths(c *fiber.Ctx) error {
 		})
 	}
 
-	baseURL := os.Getenv("OPENCODE_URL")
-	if baseURL == "" {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"status":  "error",
-			"message": "OPENCODE_URL is not configured",
-			"data":    nil,
-		})
-	}
-
-	systemMessage, err := loadTranslationSystemMessage()
-	if err != nil {
-		log.Println("translate system prompt error:", err)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"status":  "error",
-			"message": "failed to load translation system prompt",
-			"data":    nil,
-		})
-	}
-
 	providerID := os.Getenv("OPENCODE_PROVIDER_ID")
 	modelID := os.Getenv("OPENCODE_MODEL_ID")
 	var model *openCodeModel
@@ -127,11 +84,6 @@ func TranslateHadiths(c *fiber.Ctx) error {
 			ProviderID: providerID,
 			ModelID:    modelID,
 		}
-	}
-
-	agent := os.Getenv("OPENCODE_AGENT")
-	if agent == "" {
-		agent = "plan"
 	}
 
 	updated := 0
@@ -149,23 +101,11 @@ func TranslateHadiths(c *fiber.Ctx) error {
 
 		prompt := "Teks Arab:\n" + arabic + "\n\nTeks Indonesia:\n" + indonesia
 
-		sessionID, err := createOpenCodeSession(baseURL)
+		reply, err := runOpenCodeCommand(prompt, "translate", model)
 		if err != nil {
-			log.Println("translate session error:", err)
-			failed = append(failed, translateResult{Nomer: row.Nomer, Error: "failed to create AI session"})
-			continue
-		}
-
-		reply, err := sendOpenCodeMessage(baseURL, sessionID, prompt, systemMessage, agent, model)
-		if err != nil {
-			log.Println("translate message error:", err)
+			log.Println("translate opencode error:", err)
 			failed = append(failed, translateResult{Nomer: row.Nomer, Error: "failed to get AI response"})
-			_ = deleteOpenCodeSession(baseURL, sessionID)
 			continue
-		}
-
-		if err := deleteOpenCodeSession(baseURL, sessionID); err != nil {
-			log.Println("translate session delete error:", err)
 		}
 
 		if strings.TrimSpace(reply) == "" {

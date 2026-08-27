@@ -2,13 +2,11 @@ package opencode
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
-	"io"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"strings"
 	"testing"
 
 	"github.com/haditssoft/haditssoft-backend/internal/shared/auth"
@@ -135,6 +133,31 @@ func decodeJSON(t *testing.T, resp *http.Response, dest interface{}) {
 	}
 }
 
+// setExecOutput installs a mock execCommandFunc that returns the given output
+// for any opencode invocation. It restores the original function on cleanup.
+func setExecOutput(t *testing.T, output string, execErr error) {
+	t.Helper()
+	orig := execCommandFunc
+	execCommandFunc = func(name string, args ...string) ([]byte, error) {
+		return []byte(output), execErr
+	}
+	t.Cleanup(func() { execCommandFunc = orig })
+}
+
+// setExecCapture installs a mock execCommandFunc that captures the arguments
+// and returns the given output. It restores the original function on cleanup.
+func setExecCapture(t *testing.T, output string, execErr error) *[][]string {
+	t.Helper()
+	captured := &[][]string{}
+	orig := execCommandFunc
+	execCommandFunc = func(name string, args ...string) ([]byte, error) {
+		*captured = append(*captured, append([]string{name}, args...))
+		return []byte(output), execErr
+	}
+	t.Cleanup(func() { execCommandFunc = orig })
+	return captured
+}
+
 func TestRoute_AskNoAuth(t *testing.T) {
 	app := setupTestApp(t)
 
@@ -183,9 +206,7 @@ func TestRoute_AskMissingPrompt(t *testing.T) {
 		t.Fatalf("failed to generate token: %v", err)
 	}
 
-	body := map[string]interface{}{
-		"system": "You are a helpful assistant.",
-	}
+	body := map[string]interface{}{}
 	resp := makeRequestWithToken(t, app, "POST", "/ai/ask", body, jwt)
 
 	if resp.StatusCode != http.StatusBadRequest {
@@ -199,37 +220,10 @@ func TestRoute_AskMissingPrompt(t *testing.T) {
 	}
 }
 
-func TestRoute_AskMissingOpenCodeURL(t *testing.T) {
+func TestRoute_AskCLIExecutionFailure(t *testing.T) {
+	setExecOutput(t, "", fmt.Errorf("opencode not found"))
+
 	app := setupTestApp(t)
-
-	os.Unsetenv("OPENCODE_URL")
-
-	jwt, err := auth.GenerateAccessToken(1, "test@example.com")
-	if err != nil {
-		t.Fatalf("failed to generate token: %v", err)
-	}
-
-	body := map[string]interface{}{
-		"prompt": "What is hadith?",
-	}
-	resp := makeRequestWithToken(t, app, "POST", "/ai/ask", body, jwt)
-
-	if resp.StatusCode != http.StatusInternalServerError {
-		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusInternalServerError)
-	}
-
-	var errResp map[string]interface{}
-	decodeJSON(t, resp, &errResp)
-	if errResp["error"] != "OPENCODE_URL is not configured" {
-		t.Errorf("error = %v, want 'OPENCODE_URL is not configured'", errResp["error"])
-	}
-}
-
-func TestRoute_AskExternalAPIFailure(t *testing.T) {
-	app := setupTestApp(t)
-
-	os.Setenv("OPENCODE_URL", "http://127.0.0.1:19999")
-	t.Cleanup(func() { os.Unsetenv("OPENCODE_URL") })
 
 	jwt, err := auth.GenerateAccessToken(1, "test@example.com")
 	if err != nil {
@@ -247,8 +241,8 @@ func TestRoute_AskExternalAPIFailure(t *testing.T) {
 
 	var errResp map[string]interface{}
 	decodeJSON(t, resp, &errResp)
-	if errResp["error"] != "failed to create AI session" {
-		t.Errorf("error = %v, want 'failed to create AI session'", errResp["error"])
+	if errResp["error"] != "failed to get AI response" {
+		t.Errorf("error = %v, want 'failed to get AI response'", errResp["error"])
 	}
 }
 
@@ -261,11 +255,10 @@ func TestRoute_AskWrongMethod(t *testing.T) {
 	}
 }
 
-func TestRoute_AskWithSystemMessage(t *testing.T) {
-	app := setupTestApp(t)
+func TestRoute_AskSuccess(t *testing.T) {
+	setExecOutput(t, `{"type":"text","part":{"text":"hadith is a tradition"}}`, nil)
 
-	os.Setenv("OPENCODE_URL", "http://127.0.0.1:19999")
-	t.Cleanup(func() { os.Unsetenv("OPENCODE_URL") })
+	app := setupTestApp(t)
 
 	jwt, err := auth.GenerateAccessToken(1, "test@example.com")
 	if err != nil {
@@ -274,30 +267,17 @@ func TestRoute_AskWithSystemMessage(t *testing.T) {
 
 	body := map[string]interface{}{
 		"prompt": "What is hadith?",
-		"system": "You are a Quran scholar.",
 	}
 	resp := makeRequestWithToken(t, app, "POST", "/ai/ask", body, jwt)
 
-	if resp.StatusCode != http.StatusBadGateway {
-		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusBadGateway)
-	}
-}
-
-func TestRoutes_AIPathExists(t *testing.T) {
-	app := setupTestApp(t)
-
-	routes := app.Stack()
-	postCount := 0
-	for _, methodRoutes := range routes {
-		for _, route := range methodRoutes {
-			if route.Method == "POST" && route.Path == "/ai/ask" {
-				postCount++
-			}
-		}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 
-	if postCount != 1 {
-		t.Errorf("expected 1 POST /ai/ask route, got %d", postCount)
+	var result map[string]interface{}
+	decodeJSON(t, resp, &result)
+	if result["reply"] != "hadith is a tradition" {
+		t.Errorf("reply = %v, want 'hadith is a tradition'", result["reply"])
 	}
 }
 
@@ -330,552 +310,223 @@ func TestRoute_AskDeletedUser(t *testing.T) {
 	}
 }
 
-// setupModelTestApp creates a test app with a mock opencode server that captures requests
-func setupModelTestApp(t *testing.T) (*fiber.App, **http.Request, *[]byte, string) {
-	t.Helper()
+func TestRoutes_AIPathExists(t *testing.T) {
+	app := setupTestApp(t)
 
-	var capturedMsgReq *http.Request
-	var capturedMsgBody []byte
-	sessionID := "test-session-123"
+	routes := app.Stack()
+	postCount := 0
+	for _, methodRoutes := range routes {
+		for _, route := range methodRoutes {
+			if route.Method == "POST" && route.Path == "/ai/ask" {
+				postCount++
+			}
+		}
+	}
 
-	msgServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/session" && r.Method == "POST" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(map[string]string{"id": sessionID})
-			return
-		}
-		if strings.HasPrefix(r.URL.Path, "/session/") && strings.HasSuffix(r.URL.Path, "/message") && r.Method == "POST" {
-			capturedMsgReq = r
-			capturedMsgBody, _ = io.ReadAll(r.Body)
-			r.Body.Close()
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"parts": []map[string]string{{"type": "text", "text": "test response"}},
-			})
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	t.Cleanup(msgServer.Close)
+	if postCount != 1 {
+		t.Errorf("expected 1 POST /ai/ask route, got %d", postCount)
+	}
+}
+
+func TestOpenCodeCLIArgsDefaultAgent(t *testing.T) {
+	captured := setExecCapture(t, `{"type":"text","part":{"text":"ok"}}`, nil)
 
 	app := setupTestApp(t)
-	return app, &capturedMsgReq, &capturedMsgBody, msgServer.URL
-}
-
-// TestOpenCodeModelFieldBothEnvVarsSet tests that model field is sent when both env vars are set
-func TestOpenCodeModelFieldBothEnvVarsSet(t *testing.T) {
-	os.Setenv("OPENCODE_URL", "http://placeholder")
-	os.Setenv("OPENCODE_PROVIDER_ID", "opencode")
-	os.Setenv("OPENCODE_MODEL_ID", "deepseek-v4-flash-free")
-	t.Cleanup(func() {
-		os.Unsetenv("OPENCODE_URL")
-		os.Unsetenv("OPENCODE_PROVIDER_ID")
-		os.Unsetenv("OPENCODE_MODEL_ID")
-	})
-
-	app, capturedMsgReq, capturedMsgBody, testURL := setupModelTestApp(t)
-	os.Setenv("OPENCODE_URL", testURL)
-	jwt, _ := auth.GenerateAccessToken(1, "test@example.com")
-
-	reqBody := map[string]interface{}{
-		"prompt":      "What is hadith?",
-		"provider_id": "ignored-provider",
-		"model_id":    "ignored-model",
-	}
-	resp := makeRequestWithToken(t, app, "POST", "/ai/ask", reqBody, jwt)
-
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-
-	if *capturedMsgReq == nil {
-		t.Fatal("no message request captured")
-	}
-
-	var msgReqBody map[string]interface{}
-	if err := json.Unmarshal(*capturedMsgBody, &msgReqBody); err != nil {
-		t.Fatalf("failed to decode request body: %v", err)
-	}
-
-	model, ok := msgReqBody["model"].(map[string]interface{})
-	if !ok {
-		t.Fatal("model field missing from request body")
-	}
-	if model["providerID"] != "opencode" {
-		t.Errorf("providerID = %v, want 'opencode'", model["providerID"])
-	}
-	if model["modelID"] != "deepseek-v4-flash-free" {
-		t.Errorf("modelID = %v, want 'deepseek-v4-flash-free'", model["modelID"])
-	}
-
-	if msgReqBody["provider_id"] != nil {
-		t.Error("provider_id from request body should not be in request")
-	}
-	if msgReqBody["model_id"] != nil {
-		t.Error("model_id from request body should not be in request")
-	}
-}
-
-// TestOpenCodeModelFieldOnlyProviderIDSet tests that model field is NOT sent when only provider is set
-func TestOpenCodeModelFieldOnlyProviderIDSet(t *testing.T) {
-	os.Setenv("OPENCODE_URL", "http://placeholder")
-	os.Setenv("OPENCODE_PROVIDER_ID", "opencode")
-	t.Cleanup(func() {
-		os.Unsetenv("OPENCODE_URL")
-		os.Unsetenv("OPENCODE_PROVIDER_ID")
-	})
-
-	app, capturedMsgReq, capturedMsgBody, testURL := setupModelTestApp(t)
-	os.Setenv("OPENCODE_URL", testURL)
-	jwt, _ := auth.GenerateAccessToken(1, "test@example.com")
-
-	reqBody := map[string]interface{}{
-		"prompt": "What is hadith?",
-	}
-	makeRequestWithToken(t, app, "POST", "/ai/ask", reqBody, jwt)
-
-	if *capturedMsgReq == nil {
-		t.Fatal("no message request captured")
-	}
-
-	var msgReqBody map[string]interface{}
-	if err := json.Unmarshal(*capturedMsgBody, &msgReqBody); err != nil {
-		t.Fatalf("failed to decode request body: %v", err)
-	}
-
-	if _, ok := msgReqBody["model"]; ok {
-		t.Error("model field should not be present when only OPENCODE_PROVIDER_ID is set")
-	}
-}
-
-// TestOpenCodeModelFieldOnlyModelIDSet tests that model field is NOT sent when only model is set
-func TestOpenCodeModelFieldOnlyModelIDSet(t *testing.T) {
-	os.Setenv("OPENCODE_URL", "http://placeholder")
-	os.Setenv("OPENCODE_MODEL_ID", "deepseek-v4-flash-free")
-	t.Cleanup(func() {
-		os.Unsetenv("OPENCODE_URL")
-		os.Unsetenv("OPENCODE_MODEL_ID")
-	})
-
-	app, capturedMsgReq, capturedMsgBody, testURL := setupModelTestApp(t)
-	os.Setenv("OPENCODE_URL", testURL)
-	jwt, _ := auth.GenerateAccessToken(1, "test@example.com")
-
-	reqBody := map[string]interface{}{
-		"prompt": "What is hadith?",
-	}
-	makeRequestWithToken(t, app, "POST", "/ai/ask", reqBody, jwt)
-
-	if *capturedMsgReq == nil {
-		t.Fatal("no message request captured")
-	}
-
-	var msgReqBody map[string]interface{}
-	if err := json.Unmarshal(*capturedMsgBody, &msgReqBody); err != nil {
-		t.Fatalf("failed to decode request body: %v", err)
-	}
-
-	if _, ok := msgReqBody["model"]; ok {
-		t.Error("model field should not be present when only OPENCODE_MODEL_ID is set")
-	}
-}
-
-// TestOpenCodeModelFieldNeitherEnvVarSet tests that model field is NOT sent when neither env var is set
-func TestOpenCodeModelFieldNeitherEnvVarSet(t *testing.T) {
-	os.Setenv("OPENCODE_URL", "http://placeholder")
-	t.Cleanup(func() { os.Unsetenv("OPENCODE_URL") })
-
-	app, capturedMsgReq, capturedMsgBody, testURL := setupModelTestApp(t)
-	os.Setenv("OPENCODE_URL", testURL)
-	jwt, _ := auth.GenerateAccessToken(1, "test@example.com")
-
-	reqBody := map[string]interface{}{
-		"prompt": "What is hadith?",
-	}
-	makeRequestWithToken(t, app, "POST", "/ai/ask", reqBody, jwt)
-
-	if *capturedMsgReq == nil {
-		t.Fatal("no message request captured")
-	}
-
-	var msgReqBody map[string]interface{}
-	if err := json.Unmarshal(*capturedMsgBody, &msgReqBody); err != nil {
-		t.Fatalf("failed to decode request body: %v", err)
-	}
-
-	if _, ok := msgReqBody["model"]; ok {
-		t.Error("model field should not be present when neither env var is set")
-	}
-}
-
-// TestOpenCodeModelFieldRequestBodyIgnored tests that request body provider_id/model_id are ignored
-func TestOpenCodeModelFieldRequestBodyIgnored(t *testing.T) {
-	os.Setenv("OPENCODE_URL", "http://placeholder")
-	os.Setenv("OPENCODE_PROVIDER_ID", "opencode")
-	os.Setenv("OPENCODE_MODEL_ID", "deepseek-v4-flash-free")
-	t.Cleanup(func() {
-		os.Unsetenv("OPENCODE_URL")
-		os.Unsetenv("OPENCODE_PROVIDER_ID")
-		os.Unsetenv("OPENCODE_MODEL_ID")
-	})
-
-	app, capturedMsgReq, capturedMsgBody, testURL := setupModelTestApp(t)
-	os.Setenv("OPENCODE_URL", testURL)
-	jwt, _ := auth.GenerateAccessToken(1, "test@example.com")
-
-	reqBody := map[string]interface{}{
-		"prompt":      "What is hadith?",
-		"provider_id": "anthropic",
-		"model_id":    "claude-3-opus",
-	}
-	makeRequestWithToken(t, app, "POST", "/ai/ask", reqBody, jwt)
-
-	if *capturedMsgReq == nil {
-		t.Fatal("no message request captured")
-	}
-
-	var msgReqBody map[string]interface{}
-	if err := json.Unmarshal(*capturedMsgBody, &msgReqBody); err != nil {
-		t.Fatalf("failed to decode request body: %v", err)
-	}
-
-	model, ok := msgReqBody["model"].(map[string]interface{})
-	if !ok {
-		t.Fatal("model field missing from request body")
-	}
-	if model["providerID"] != "opencode" {
-		t.Errorf("providerID = %v, want 'opencode' (from env, not request body)", model["providerID"])
-	}
-	if model["modelID"] != "deepseek-v4-flash-free" {
-		t.Errorf("modelID = %v, want 'deepseek-v4-flash-free' (from env, not request body)", model["modelID"])
-	}
-
-	if msgReqBody["provider_id"] != nil {
-		t.Error("provider_id from request body should not be in request to opencode")
-	}
-	if msgReqBody["model_id"] != nil {
-		t.Error("model_id from request body should not be in request to opencode")
-	}
-}
-
-// TestOpenCodeAgentFieldDefaultIsPlan tests that agent defaults to "plan" when OPENCODE_AGENT is unset
-func TestOpenCodeAgentFieldDefaultIsPlan(t *testing.T) {
 	os.Unsetenv("OPENCODE_AGENT")
-	os.Setenv("OPENCODE_URL", "http://placeholder")
-	t.Cleanup(func() {
-		os.Unsetenv("OPENCODE_URL")
-		os.Unsetenv("OPENCODE_AGENT")
-	})
+	t.Cleanup(func() { os.Unsetenv("OPENCODE_AGENT") })
 
-	app, capturedMsgReq, capturedMsgBody, testURL := setupModelTestApp(t)
-	os.Setenv("OPENCODE_URL", testURL)
 	jwt, _ := auth.GenerateAccessToken(1, "test@example.com")
 
-	reqBody := map[string]interface{}{
-		"prompt": "What is hadith?",
-	}
-	resp := makeRequestWithToken(t, app, "POST", "/ai/ask", reqBody, jwt)
-
+	body := map[string]interface{}{"prompt": "hello"}
+	resp := makeRequestWithToken(t, app, "POST", "/ai/ask", body, jwt)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 
-	if *capturedMsgReq == nil {
-		t.Fatal("no message request captured")
+	if len(*captured) != 1 {
+		t.Fatalf("got %d calls, want 1", len(*captured))
 	}
-
-	var msgReqBody map[string]interface{}
-	if err := json.Unmarshal(*capturedMsgBody, &msgReqBody); err != nil {
-		t.Fatalf("failed to decode request body: %v", err)
+	args := (*captured)[0]
+	if args[0] != "opencode" {
+		t.Errorf("binary = %v, want 'opencode'", args[0])
 	}
-
-	agent, ok := msgReqBody["agent"].(string)
-	if !ok {
-		t.Fatal("agent field missing from request body")
+	if !containsArg(args, "--format") || !containsArg(args, "json") {
+		t.Error("missing --format json flag")
 	}
-	if agent != "plan" {
-		t.Errorf("agent = %v, want 'plan' (default)", agent)
+	if !containsArg(args, "--agent") || !containsArg(args, "plan") {
+		t.Error("missing --agent plan flag (default)")
 	}
-}
-
-// TestOpenCodeAgentFieldFromEnv tests that agent uses the value from OPENCODE_AGENT
-func TestOpenCodeAgentFieldFromEnv(t *testing.T) {
-	os.Setenv("OPENCODE_AGENT", "architect")
-	os.Setenv("OPENCODE_URL", "http://placeholder")
-	t.Cleanup(func() {
-		os.Unsetenv("OPENCODE_URL")
-		os.Unsetenv("OPENCODE_AGENT")
-	})
-
-	app, capturedMsgReq, capturedMsgBody, testURL := setupModelTestApp(t)
-	os.Setenv("OPENCODE_URL", testURL)
-	jwt, _ := auth.GenerateAccessToken(1, "test@example.com")
-
-	reqBody := map[string]interface{}{
-		"prompt": "What is hadith?",
-	}
-	resp := makeRequestWithToken(t, app, "POST", "/ai/ask", reqBody, jwt)
-
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-
-	if *capturedMsgReq == nil {
-		t.Fatal("no message request captured")
-	}
-
-	var msgReqBody map[string]interface{}
-	if err := json.Unmarshal(*capturedMsgBody, &msgReqBody); err != nil {
-		t.Fatalf("failed to decode request body: %v", err)
-	}
-
-	agent, ok := msgReqBody["agent"].(string)
-	if !ok {
-		t.Fatal("agent field missing from request body")
-	}
-	if agent != "architect" {
-		t.Errorf("agent = %v, want 'architect' (from env)", agent)
+	if args[len(args)-1] != "hello" {
+		t.Errorf("prompt = %v, want 'hello'", args[len(args)-1])
 	}
 }
 
-// TestOpenCodeAgentFieldEmptyEnvFallsBackToPlan tests that empty OPENCODE_AGENT falls back to "plan"
-func TestOpenCodeAgentFieldEmptyEnvFallsBackToPlan(t *testing.T) {
-	os.Setenv("OPENCODE_AGENT", "")
-	os.Setenv("OPENCODE_URL", "http://placeholder")
-	t.Cleanup(func() {
-		os.Unsetenv("OPENCODE_URL")
-		os.Unsetenv("OPENCODE_AGENT")
-	})
-
-	app, capturedMsgReq, capturedMsgBody, testURL := setupModelTestApp(t)
-	os.Setenv("OPENCODE_URL", testURL)
-	jwt, _ := auth.GenerateAccessToken(1, "test@example.com")
-
-	reqBody := map[string]interface{}{
-		"prompt": "What is hadith?",
-	}
-	resp := makeRequestWithToken(t, app, "POST", "/ai/ask", reqBody, jwt)
-
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-
-	if *capturedMsgReq == nil {
-		t.Fatal("no message request captured")
-	}
-
-	var msgReqBody map[string]interface{}
-	if err := json.Unmarshal(*capturedMsgBody, &msgReqBody); err != nil {
-		t.Fatalf("failed to decode request body: %v", err)
-	}
-
-	agent, ok := msgReqBody["agent"].(string)
-	if !ok {
-		t.Fatal("agent field missing from request body")
-	}
-	if agent != "plan" {
-		t.Errorf("agent = %v, want 'plan' (fallback for empty env)", agent)
-	}
-}
-
-// setupBasicAuthTestApp creates a test app with a mock opencode server that captures
-// the Authorization header on every outbound request (session, message, delete).
-func setupBasicAuthTestApp(t *testing.T) (*fiber.App, *string, *string, *string, string) {
-	t.Helper()
-
-	var sessionAuth, msgAuth, deleteAuth string
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		auth := r.Header.Get("Authorization")
-		switch {
-		case r.URL.Path == "/session" && r.Method == http.MethodPost:
-			sessionAuth = auth
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(map[string]string{"id": "test-session-123"})
-		case strings.HasPrefix(r.URL.Path, "/session/") && strings.HasSuffix(r.URL.Path, "/message") && r.Method == http.MethodPost:
-			msgAuth = auth
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"parts": []map[string]string{{"type": "text", "text": "test response"}},
-			})
-		case strings.HasPrefix(r.URL.Path, "/session/") && r.Method == http.MethodDelete:
-			deleteAuth = auth
-			w.WriteHeader(http.StatusOK)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(srv.Close)
+func TestOpenCodeCLIArgsFromEnvAgent(t *testing.T) {
+	captured := setExecCapture(t, `{"type":"text","part":{"text":"ok"}}`, nil)
 
 	app := setupTestApp(t)
-	return app, &sessionAuth, &msgAuth, &deleteAuth, srv.URL
-}
+	os.Setenv("OPENCODE_AGENT", "architect")
+	t.Cleanup(func() { os.Unsetenv("OPENCODE_AGENT") })
 
-// TestOpenCodeBasicAuthDefaultUsername tests that all outbound requests send
-// Basic auth with the default "opencode" username when OPENCODE_USERNAME is unset.
-func TestOpenCodeBasicAuthDefaultUsername(t *testing.T) {
-	os.Unsetenv("OPENCODE_USERNAME")
-	os.Setenv("OPENCODE_PASSWORD", "test-password")
-	t.Cleanup(func() {
-		os.Unsetenv("OPENCODE_USERNAME")
-		os.Unsetenv("OPENCODE_PASSWORD")
-	})
+	jwt, _ := auth.GenerateAccessToken(1, "test@example.com")
 
-	app, sessionAuth, msgAuth, deleteAuth, testURL := setupBasicAuthTestApp(t)
-	os.Setenv("OPENCODE_URL", testURL)
-	t.Cleanup(func() { os.Unsetenv("OPENCODE_URL") })
-
-	jwt, err := auth.GenerateAccessToken(1, "test@example.com")
-	if err != nil {
-		t.Fatalf("failed to generate token: %v", err)
-	}
-
-	body := map[string]interface{}{"prompt": "What is hadith?"}
+	body := map[string]interface{}{"prompt": "hello"}
 	resp := makeRequestWithToken(t, app, "POST", "/ai/ask", body, jwt)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 
-	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("opencode:test-password"))
-	if *sessionAuth != want {
-		t.Errorf("session auth = %q, want %q", *sessionAuth, want)
-	}
-	if *msgAuth != want {
-		t.Errorf("message auth = %q, want %q", *msgAuth, want)
-	}
-	if *deleteAuth != want {
-		t.Errorf("delete auth = %q, want %q", *deleteAuth, want)
+	args := (*captured)[0]
+	if !containsArg(args, "--agent") || !containsArg(args, "architect") {
+		t.Errorf("agent flag not set to 'architect', got args: %v", args)
 	}
 }
 
-// TestOpenCodeBasicAuthCustomUsername tests that OPENCODE_USERNAME overrides the default.
-func TestOpenCodeBasicAuthCustomUsername(t *testing.T) {
-	os.Setenv("OPENCODE_USERNAME", "automation")
-	os.Setenv("OPENCODE_PASSWORD", "secret-pw")
+func TestOpenCodeCLIArgsWithModel(t *testing.T) {
+	captured := setExecCapture(t, `{"type":"text","part":{"text":"ok"}}`, nil)
+
+	app := setupTestApp(t)
+	os.Setenv("OPENCODE_PROVIDER_ID", "opencode")
+	os.Setenv("OPENCODE_MODEL_ID", "deepseek-v4-flash-free")
 	t.Cleanup(func() {
-		os.Unsetenv("OPENCODE_USERNAME")
-		os.Unsetenv("OPENCODE_PASSWORD")
+		os.Unsetenv("OPENCODE_PROVIDER_ID")
+		os.Unsetenv("OPENCODE_MODEL_ID")
 	})
 
-	app, sessionAuth, msgAuth, deleteAuth, testURL := setupBasicAuthTestApp(t)
-	os.Setenv("OPENCODE_URL", testURL)
-	t.Cleanup(func() { os.Unsetenv("OPENCODE_URL") })
+	jwt, _ := auth.GenerateAccessToken(1, "test@example.com")
 
-	jwt, err := auth.GenerateAccessToken(1, "test@example.com")
-	if err != nil {
-		t.Fatalf("failed to generate token: %v", err)
-	}
-
-	body := map[string]interface{}{"prompt": "What is hadith?"}
+	body := map[string]interface{}{"prompt": "hello"}
 	resp := makeRequestWithToken(t, app, "POST", "/ai/ask", body, jwt)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 
-	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("automation:secret-pw"))
-	if *sessionAuth != want {
-		t.Errorf("session auth = %q, want %q", *sessionAuth, want)
+	args := (*captured)[0]
+	if !containsArg(args, "--model") {
+		t.Error("missing --model flag")
 	}
-	if *msgAuth != want {
-		t.Errorf("message auth = %q, want %q", *msgAuth, want)
-	}
-	if *deleteAuth != want {
-		t.Errorf("delete auth = %q, want %q", *deleteAuth, want)
+	modelIdx := indexOfArg(args, "--model")
+	if modelIdx < 0 || args[modelIdx+1] != "opencode/deepseek-v4-flash-free" {
+		t.Errorf("model = %v, want 'opencode/deepseek-v4-flash-free'", args[modelIdx+1])
 	}
 }
 
-// TestOpenCodeBasicAuthNoPassword tests that no Authorization header is sent
-// when OPENCODE_PASSWORD is unset (backwards compatible).
-func TestOpenCodeBasicAuthNoPassword(t *testing.T) {
-	os.Setenv("OPENCODE_USERNAME", "opencode")
-	os.Unsetenv("OPENCODE_PASSWORD")
+func TestOpenCodeCLIArgsNoModelWhenUnset(t *testing.T) {
+	captured := setExecCapture(t, `{"type":"text","part":{"text":"ok"}}`, nil)
+
+	app := setupTestApp(t)
+	os.Unsetenv("OPENCODE_PROVIDER_ID")
+	os.Unsetenv("OPENCODE_MODEL_ID")
 	t.Cleanup(func() {
-		os.Unsetenv("OPENCODE_USERNAME")
-		os.Unsetenv("OPENCODE_PASSWORD")
+		os.Unsetenv("OPENCODE_PROVIDER_ID")
+		os.Unsetenv("OPENCODE_MODEL_ID")
 	})
 
-	app, sessionAuth, msgAuth, deleteAuth, testURL := setupBasicAuthTestApp(t)
-	os.Setenv("OPENCODE_URL", testURL)
-	t.Cleanup(func() { os.Unsetenv("OPENCODE_URL") })
+	jwt, _ := auth.GenerateAccessToken(1, "test@example.com")
 
-	jwt, err := auth.GenerateAccessToken(1, "test@example.com")
-	if err != nil {
-		t.Fatalf("failed to generate token: %v", err)
-	}
+	body := map[string]interface{}{"prompt": "hello"}
+	makeRequestWithToken(t, app, "POST", "/ai/ask", body, jwt)
 
-	body := map[string]interface{}{"prompt": "What is hadith?"}
-	resp := makeRequestWithToken(t, app, "POST", "/ai/ask", body, jwt)
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-
-	if *sessionAuth != "" {
-		t.Errorf("session auth = %q, want empty (no password configured)", *sessionAuth)
-	}
-	if *msgAuth != "" {
-		t.Errorf("message auth = %q, want empty (no password configured)", *msgAuth)
-	}
-	if *deleteAuth != "" {
-		t.Errorf("delete auth = %q, want empty (no password configured)", *deleteAuth)
+	args := (*captured)[0]
+	if containsArg(args, "--model") {
+		t.Error("--model flag should not be present when env vars are unset")
 	}
 }
 
-// TestOpenCodeBasicAuthHelper covers the credential builder directly.
-func TestOpenCodeBasicAuthHelper(t *testing.T) {
-	t.Run("default username", func(t *testing.T) {
-		os.Unsetenv("OPENCODE_USERNAME")
-		os.Setenv("OPENCODE_PASSWORD", "pw")
-		t.Cleanup(func() {
-			os.Unsetenv("OPENCODE_USERNAME")
-			os.Unsetenv("OPENCODE_PASSWORD")
-		})
+func TestOpenCodeCLIArgsPartialModelNotSent(t *testing.T) {
+	captured := setExecCapture(t, `{"type":"text","part":{"text":"ok"}}`, nil)
 
-		want := "Basic " + base64.StdEncoding.EncodeToString([]byte("opencode:pw"))
-		if got := openCodeBasicAuth(); got != want {
-			t.Errorf("got %q, want %q", got, want)
-		}
+	app := setupTestApp(t)
+	os.Setenv("OPENCODE_PROVIDER_ID", "opencode")
+	os.Unsetenv("OPENCODE_MODEL_ID")
+	t.Cleanup(func() {
+		os.Unsetenv("OPENCODE_PROVIDER_ID")
+		os.Unsetenv("OPENCODE_MODEL_ID")
 	})
 
-	t.Run("custom username", func(t *testing.T) {
-		os.Setenv("OPENCODE_USERNAME", "admin")
-		os.Setenv("OPENCODE_PASSWORD", "pw")
-		t.Cleanup(func() {
-			os.Unsetenv("OPENCODE_USERNAME")
-			os.Unsetenv("OPENCODE_PASSWORD")
+	jwt, _ := auth.GenerateAccessToken(1, "test@example.com")
+
+	body := map[string]interface{}{"prompt": "hello"}
+	makeRequestWithToken(t, app, "POST", "/ai/ask", body, jwt)
+
+	args := (*captured)[0]
+	if containsArg(args, "--model") {
+		t.Error("--model flag should not be present when only provider is set")
+	}
+}
+
+func TestParseOpenCodeNDJSON(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{
+			name:  "single text event",
+			input: `{"type":"step_start","timestamp":1}` + "\n" + `{"type":"text","part":{"text":"hello world"}}` + "\n" + `{"type":"step_finish"}`,
+			want:  "hello world",
+		},
+		{
+			name:  "multiple text events concatenated",
+			input: `{"type":"text","part":{"text":"line1"}}` + "\n" + `{"type":"text","part":{"text":"line2"}}`,
+			want:  "line1\nline2",
+		},
+		{
+			name:    "no text events",
+			input:   `{"type":"step_start"}` + "\n" + `{"type":"step_finish"}`,
+			wantErr: true,
+		},
+		{
+			name:    "empty input",
+			input:   "",
+			wantErr: true,
+		},
+		{
+			name:  "empty text ignored",
+			input: `{"type":"text","part":{"text":""}}` + "\n" + `{"type":"text","part":{"text":"actual"}}`,
+			want:  "actual",
+		},
+		{
+			name:  "malformed lines skipped",
+			input: `not json` + "\n" + `{"type":"text","part":{"text":"ok"}}`,
+			want:  "ok",
+		},
+		{
+			name:  "whitespace trimmed",
+			input: `{"type":"text","part":{"text":"  trimmed  "}}`,
+			want:  "trimmed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseOpenCodeNDJSON([]byte(tt.input))
+			if (err != nil) != tt.wantErr {
+				t.Errorf("parseOpenCodeNDJSON() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("parseOpenCodeNDJSON() = %q, want %q", got, tt.want)
+			}
 		})
+	}
+}
 
-		want := "Basic " + base64.StdEncoding.EncodeToString([]byte("admin:pw"))
-		if got := openCodeBasicAuth(); got != want {
-			t.Errorf("got %q, want %q", got, want)
+func containsArg(args []string, target string) bool {
+	for _, a := range args {
+		if a == target {
+			return true
 		}
-	})
+	}
+	return false
+}
 
-	t.Run("empty password", func(t *testing.T) {
-		os.Setenv("OPENCODE_USERNAME", "opencode")
-		os.Unsetenv("OPENCODE_PASSWORD")
-		t.Cleanup(func() {
-			os.Unsetenv("OPENCODE_USERNAME")
-			os.Unsetenv("OPENCODE_PASSWORD")
-		})
-
-		if got := openCodeBasicAuth(); got != "" {
-			t.Errorf("got %q, want empty string", got)
+func indexOfArg(args []string, target string) int {
+	for i, a := range args {
+		if a == target {
+			return i
 		}
-	})
-
-	t.Run("empty username falls back to default", func(t *testing.T) {
-		os.Setenv("OPENCODE_USERNAME", "")
-		os.Setenv("OPENCODE_PASSWORD", "pw")
-		t.Cleanup(func() {
-			os.Unsetenv("OPENCODE_USERNAME")
-			os.Unsetenv("OPENCODE_PASSWORD")
-		})
-
-		want := "Basic " + base64.StdEncoding.EncodeToString([]byte("opencode:pw"))
-		if got := openCodeBasicAuth(); got != want {
-			t.Errorf("got %q, want %q", got, want)
-		}
-	})
+	}
+	return -1
 }
