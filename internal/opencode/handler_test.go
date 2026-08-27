@@ -138,8 +138,8 @@ func decodeJSON(t *testing.T, resp *http.Response, dest interface{}) {
 func setExecOutput(t *testing.T, output string, execErr error) {
 	t.Helper()
 	orig := execCommandFunc
-	execCommandFunc = func(name string, args ...string) ([]byte, error) {
-		return []byte(output), execErr
+	execCommandFunc = func(name string, args ...string) ([]byte, []byte, error) {
+		return []byte(output), nil, execErr
 	}
 	t.Cleanup(func() { execCommandFunc = orig })
 }
@@ -150,9 +150,9 @@ func setExecCapture(t *testing.T, output string, execErr error) *[][]string {
 	t.Helper()
 	captured := &[][]string{}
 	orig := execCommandFunc
-	execCommandFunc = func(name string, args ...string) ([]byte, error) {
+	execCommandFunc = func(name string, args ...string) ([]byte, []byte, error) {
 		*captured = append(*captured, append([]string{name}, args...))
-		return []byte(output), execErr
+		return []byte(output), nil, execErr
 	}
 	t.Cleanup(func() { execCommandFunc = orig })
 	return captured
@@ -353,6 +353,9 @@ func TestOpenCodeCLIArgsDefaultAgent(t *testing.T) {
 	if !containsArg(args, "--format") || !containsArg(args, "json") {
 		t.Error("missing --format json flag")
 	}
+	if !containsArg(args, "--pure") {
+		t.Error("missing --pure flag")
+	}
 	if !containsArg(args, "--agent") || !containsArg(args, "plan") {
 		t.Error("missing --agent plan flag (default)")
 	}
@@ -497,6 +500,28 @@ func TestParseOpenCodeNDJSON(t *testing.T) {
 			input: `{"type":"text","part":{"text":"  trimmed  "}}`,
 			want:  "trimmed",
 		},
+		{
+			name:  "error event ignored by text parser",
+			input: `{"type":"error","error":{"data":{"message":"server error"}}}`,
+			want:  "",
+			// parseOpenCodeNDJSON skips non-text events; no text events = error
+			wantErr: true,
+		},
+		{
+			name:  "text before error event",
+			input: `{"type":"text","part":{"text":"partial"}}` + "\n" + `{"type":"error","error":{"data":{"message":"crashed"}}}`,
+			want:  "partial",
+		},
+		{
+			name:  "real opencode output with step_start and step_finish",
+			input: "{\"type\":\"step_start\",\"timestamp\":1787809843152}\n{\"type\":\"text\",\"timestamp\":1787809844901,\"part\":{\"text\":\"So I said\"}}\n{\"type\":\"step_finish\",\"timestamp\":1787809845031}",
+			want:  "So I said",
+		},
+		{
+			name:  "multiple text parts with tool calls between them",
+			input: `{"type":"text","part":{"text":"first"}}` + "\n" + `{"type":"tool_use","part":{"name":"webfetch"}}` + "\n" + `{"type":"text","part":{"text":"second"}}`,
+			want:  "first\nsecond",
+		},
 	}
 
 	for _, tt := range tests {
@@ -508,6 +533,290 @@ func TestParseOpenCodeNDJSON(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Errorf("parseOpenCodeNDJSON() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseOpenCodeNDJSONError(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "standard error event",
+			input: `{"type":"error","error":{"data":{"message":"Unexpected server error"}}}`,
+			want:  "Unexpected server error",
+		},
+		{
+			name: "error event among other events",
+			input: `{"type":"step_start"}` + "\n" +
+				`{"type":"error","error":{"data":{"message":"rate limited"}}}` + "\n" +
+				`{"type":"step_finish"}`,
+			want: "rate limited",
+		},
+		{
+			name:  "no error event",
+			input: `{"type":"text","part":{"text":"ok"}}`,
+			want:  "",
+		},
+		{
+			name:  "empty input",
+			input: "",
+			want:  "",
+		},
+		{
+			name:  "error event with empty message",
+			input: `{"type":"error","error":{"data":{"message":""}}}`,
+			want:  "",
+		},
+		{
+			name:  "malformed lines skipped",
+			input: `not json` + "\n" + `{"type":"error","error":{"data":{"message":"found"}}}`,
+			want:  "found",
+		},
+		{
+			name:  "error event with nested ref",
+			input: `{"type":"error","timestamp":1787809750639,"error":{"name":"UnknownError","data":{"message":"Unexpected server error. Check server logs for details.","ref":"err_9d757de8"}}}`,
+			want:  "Unexpected server error. Check server logs for details.",
+		},
+		{
+			name:  "empty string",
+			input: "",
+			want:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseOpenCodeNDJSONError([]byte(tt.input))
+			if got != tt.want {
+				t.Errorf("parseOpenCodeNDJSONError() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunOpenCodeCommand_ServerErrorMessage(t *testing.T) {
+	serverErrOutput := `{"type":"step_start","timestamp":1}` + "\n" +
+		`{"type":"error","timestamp":1787809750639,"error":{"name":"UnknownError","data":{"message":"Unexpected server error. Check server logs for details.","ref":"err_9d757de8"}}}`
+
+	orig := execCommandFunc
+	execCommandFunc = func(name string, args ...string) ([]byte, []byte, error) {
+		return []byte(serverErrOutput), nil, fmt.Errorf("exit status 1")
+	}
+	t.Cleanup(func() { execCommandFunc = orig })
+
+	_, err := runOpenCodeCommand("test prompt", "translate", nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	want := "opencode server error: Unexpected server error. Check server logs for details."
+	if err.Error() != want {
+		t.Errorf("error = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestRunOpenCodeCommand_ServerErrorWithStderr(t *testing.T) {
+	serverErrOutput := `{"type":"step_start","timestamp":1}` + "\n" +
+		`{"type":"error","timestamp":1,"error":{"name":"UnknownError","data":{"message":"Unexpected server error. Check server logs for details.","ref":"err_test"}}}`
+
+	orig := execCommandFunc
+	execCommandFunc = func(name string, args ...string) ([]byte, []byte, error) {
+		return []byte(serverErrOutput), []byte("ProviderModelNotFoundError: Model not found: opencode/deepseek-v4-flash-free"), fmt.Errorf("exit status 1")
+	}
+	t.Cleanup(func() { execCommandFunc = orig })
+
+	_, err := runOpenCodeCommand("test prompt", "translate", nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	got := err.Error()
+	if !containsString(got, "opencode server error: Unexpected server error") {
+		t.Errorf("error missing server error prefix: %q", got)
+	}
+	if !containsString(got, "ProviderModelNotFoundError") {
+		t.Errorf("error should include stderr for generic errors: %q", got)
+	}
+}
+
+func TestRunOpenCodeCommand_ServerErrorNonGenericNoStderr(t *testing.T) {
+	serverErrOutput := `{"type":"error","error":{"data":{"message":"Rate limit exceeded. Try again later."}}}`
+
+	orig := execCommandFunc
+	execCommandFunc = func(name string, args ...string) ([]byte, []byte, error) {
+		return []byte(serverErrOutput), []byte("some stderr noise"), fmt.Errorf("exit status 1")
+	}
+	t.Cleanup(func() { execCommandFunc = orig })
+
+	_, err := runOpenCodeCommand("test prompt", "translate", nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	got := err.Error()
+	want := "opencode server error: Rate limit exceeded. Try again later."
+	if got != want {
+		t.Errorf("error = %q, want %q (non-generic errors should not include stderr)", got, want)
+	}
+}
+
+func TestRunOpenCodeCommand_ExecFailureWithStderr(t *testing.T) {
+	orig := execCommandFunc
+	execCommandFunc = func(name string, args ...string) ([]byte, []byte, error) {
+		return nil, []byte("command not found in PATH"), fmt.Errorf("exec: \"opencode\": executable file not found in $PATH")
+	}
+	t.Cleanup(func() { execCommandFunc = orig })
+
+	_, err := runOpenCodeCommand("test prompt", "plan", nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	got := err.Error()
+	if !containsString(got, "opencode run failed:") {
+		t.Errorf("error missing prefix: %q", got)
+	}
+	if !containsString(got, "command not found in PATH") {
+		t.Errorf("error should include stderr content: %q", got)
+	}
+}
+
+func TestRunOpenCodeCommand_ExecFailureNoOutput(t *testing.T) {
+	orig := execCommandFunc
+	execCommandFunc = func(name string, args ...string) ([]byte, []byte, error) {
+		return nil, nil, fmt.Errorf("executable not found")
+	}
+	t.Cleanup(func() { execCommandFunc = orig })
+
+	_, err := runOpenCodeCommand("test prompt", "plan", nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	want := "opencode run failed: executable not found"
+	if err.Error() != want {
+		t.Errorf("error = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestRunOpenCodeCommand_ExecFailureWithNoErrorEvent(t *testing.T) {
+	orig := execCommandFunc
+	execCommandFunc = func(name string, args ...string) ([]byte, []byte, error) {
+		return []byte(`{"type":"step_start"}`), nil, fmt.Errorf("exit status 1")
+	}
+	t.Cleanup(func() { execCommandFunc = orig })
+
+	_, err := runOpenCodeCommand("test prompt", "plan", nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	want := "opencode run failed: exit status 1"
+	if err.Error() != want {
+		t.Errorf("error = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestRunOpenCodeCommand_Success(t *testing.T) {
+	orig := execCommandFunc
+	execCommandFunc = func(name string, args ...string) ([]byte, []byte, error) {
+		return []byte(`{"type":"text","part":{"text":"translated text"}}`), nil, nil
+	}
+	t.Cleanup(func() { execCommandFunc = orig })
+
+	got, err := runOpenCodeCommand("test prompt", "translate", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "translated text" {
+		t.Errorf("result = %q, want %q", got, "translated text")
+	}
+}
+
+func TestRunOpenCodeCommand_SuccessWithModel(t *testing.T) {
+	var capturedArgs []string
+	orig := execCommandFunc
+	execCommandFunc = func(name string, args ...string) ([]byte, []byte, error) {
+		capturedArgs = append([]string{name}, args...)
+		return []byte(`{"type":"text","part":{"text":"ok"}}`), nil, nil
+	}
+	t.Cleanup(func() { execCommandFunc = orig })
+
+	model := &openCodeModel{ProviderID: "opencode", ModelID: "deepseek-v4-flash-free"}
+	got, err := runOpenCodeCommand("hello", "translate", model)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "ok" {
+		t.Errorf("result = %q, want %q", got, "ok")
+	}
+
+	if !containsArg(capturedArgs, "--model") {
+		t.Error("missing --model flag")
+	}
+	modelIdx := indexOfArg(capturedArgs, "--model")
+	if modelIdx < 0 || capturedArgs[modelIdx+1] != "opencode/deepseek-v4-flash-free" {
+		t.Errorf("model = %v, want 'opencode/deepseek-v4-flash-free'", capturedArgs[modelIdx+1])
+	}
+}
+
+func TestRunOpenCodeCommand_PureFlagPresent(t *testing.T) {
+	var capturedArgs []string
+	orig := execCommandFunc
+	execCommandFunc = func(name string, args ...string) ([]byte, []byte, error) {
+		capturedArgs = append([]string{name}, args...)
+		return []byte(`{"type":"text","part":{"text":"ok"}}`), nil, nil
+	}
+	t.Cleanup(func() { execCommandFunc = orig })
+
+	_, err := runOpenCodeCommand("test", "translate", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !containsArg(capturedArgs, "--pure") {
+		t.Error("--pure flag should always be present")
+	}
+}
+
+func TestRunOpenCodeCommand_NDJSONIgnoresStderrNoise(t *testing.T) {
+	orig := execCommandFunc
+	execCommandFunc = func(name string, args ...string) ([]byte, []byte, error) {
+		return []byte(`{"type":"step_start"}` + "\n" + `{"type":"text","part":{"text":"clean output"}}` + "\n" + `{"type":"step_finish"}`), nil, nil
+	}
+	t.Cleanup(func() { execCommandFunc = orig })
+
+	got, err := runOpenCodeCommand("test", "translate", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "clean output" {
+		t.Errorf("result = %q, want %q", got, "clean output")
+	}
+}
+
+func TestIsGenericServerError(t *testing.T) {
+	tests := []struct {
+		msg  string
+		want bool
+	}{
+		{"Unexpected server error. Check server logs for details.", true},
+		{"Unexpected server error", true},
+		{"Rate limit exceeded", false},
+		{"Model not found", false},
+		{"Endpoint unavailable", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.msg, func(t *testing.T) {
+			got := isGenericServerError(tt.msg)
+			if got != tt.want {
+				t.Errorf("isGenericServerError(%q) = %v, want %v", tt.msg, got, tt.want)
 			}
 		})
 	}
@@ -529,4 +838,17 @@ func indexOfArg(args []string, target string) int {
 		}
 	}
 	return -1
+}
+
+func containsString(s, substr string) bool {
+	return len(s) >= len(substr) && searchString(s, substr)
+}
+
+func searchString(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }

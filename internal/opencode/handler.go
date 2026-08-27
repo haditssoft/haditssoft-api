@@ -3,6 +3,7 @@ package opencode
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -22,27 +23,86 @@ type openCodeModel struct {
 	ModelID    string `json:"modelID"`
 }
 
-// execCommandFunc is the function used to execute external commands.
+// execCommandFunc executes an external command and returns (stdout, stderr, error).
 // Overridden in tests to avoid calling the real opencode CLI.
 var execCommandFunc = execCommand
 
-func execCommand(name string, args ...string) ([]byte, error) {
-	return exec.Command(name, args...).CombinedOutput()
+func execCommand(name string, args ...string) ([]byte, []byte, error) {
+	cmd := exec.Command(name, args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, nil, err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, nil, err
+	}
+	out, _ := io.ReadAll(stdout)
+	errBytes, _ := io.ReadAll(stderr)
+	cmdErr := cmd.Wait()
+	return out, errBytes, cmdErr
 }
 
 func runOpenCodeCommand(prompt, agent string, model *openCodeModel) (string, error) {
-	args := []string{"run", "--format", "json", "--agent", agent}
+	args := []string{"run", "--format", "json", "--pure", "--agent", agent}
 	if model != nil && model.ProviderID != "" && model.ModelID != "" {
 		args = append(args, "--model", model.ProviderID+"/"+model.ModelID)
 	}
 	args = append(args, prompt)
 
-	out, err := execCommandFunc("opencode", args...)
+	out, stderr, err := execCommandFunc("opencode", args...)
 	if err != nil {
-		return "", fmt.Errorf("opencode run failed: %w (output: %s)", err, strings.TrimSpace(string(out)))
+		if len(out) > 0 {
+			if ndjsonErr := parseOpenCodeNDJSONError(out); ndjsonErr != "" {
+				errMsg := "opencode server error: " + ndjsonErr
+				if isGenericServerError(ndjsonErr) && len(stderr) > 0 {
+					errMsg += " (" + strings.TrimSpace(string(stderr)) + ")"
+				}
+				return "", fmt.Errorf(errMsg)
+			}
+		}
+		if len(stderr) > 0 {
+			return "", fmt.Errorf("opencode run failed: %s (%s)", err, strings.TrimSpace(string(stderr)))
+		}
+		return "", fmt.Errorf("opencode run failed: %w", err)
 	}
 
 	return parseOpenCodeNDJSON(out)
+}
+
+// isGenericServerError returns true if the NDJSON error message is generic
+// and unhelpful (e.g. "Unexpected server error. Check server logs for details."),
+// meaning the real cause is likely in stderr.
+func isGenericServerError(msg string) bool {
+	return strings.Contains(msg, "Unexpected server error")
+}
+
+func parseOpenCodeNDJSONError(data []byte) string {
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		var event struct {
+			Type  string `json:"type"`
+			Error struct {
+				Data struct {
+					Message string `json:"message"`
+				} `json:"data"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			continue
+		}
+		if event.Type == "error" && event.Error.Data.Message != "" {
+			return event.Error.Data.Message
+		}
+	}
+	return ""
 }
 
 func parseOpenCodeNDJSON(data []byte) (string, error) {
