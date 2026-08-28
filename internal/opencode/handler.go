@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	defaultOpenCodeAgent = "plan"
+	defaultOpenCodeAgent = "summarize"
 )
 
 type openCodeModel struct {
