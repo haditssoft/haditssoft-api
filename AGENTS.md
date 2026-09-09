@@ -183,3 +183,10 @@ Two search strategies available, frontend chooses which to call:
 - Translation instructions are defined in `.opencode/agents/translate.md` (automatically loaded by `--agent translate`)
 - Per-record CLI/db failures are collected, the batch continues; empty/whitespace CLI replies are counted as failed (not written back)
 - Response: `{"processed": n, "updated": m, "failed": [{"nomer": x, "error": "..."}]}`
+- Uses the request context (`c.Context()`) for subprocess cancellation; batch aborts remaining rows if the client disconnects
+
+### AI Ask Endpoint (context + timeout)
+- `POST /ai/ask` (JWT-protected)
+- The subprocess is bound to the HTTP request context via `exec.CommandContext`, so when the client disconnects, the `opencode` subprocess is killed immediately (no zombie processes)
+- A hard timeout is enforced with `context.WithTimeout`: default **90s** (`defaultAskTimeoutSec` in `internal/opencode/handler.go`), configurable via `OPENCODE_ASK_TIMEOUT_SEC` env var (must be ≥ 1; invalid/zero values fall back to the default)
+- On timeout, the handler returns `502 Bad Gateway` with `{"error": "failed to get AI response"}` (the exec error is logged but not exposed)

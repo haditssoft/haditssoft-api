@@ -1,13 +1,16 @@
 package opencode
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/haditssoft/haditssoft-backend/internal/shared/validator"
 
@@ -16,6 +19,7 @@ import (
 
 const (
 	defaultOpenCodeAgent = "summarize"
+	defaultAskTimeoutSec = 90
 )
 
 type openCodeModel struct {
@@ -27,8 +31,8 @@ type openCodeModel struct {
 // Overridden in tests to avoid calling the real opencode CLI.
 var execCommandFunc = execCommand
 
-func execCommand(name string, args ...string) ([]byte, []byte, error) {
-	cmd := exec.Command(name, args...)
+func execCommand(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, nil, err
@@ -46,14 +50,14 @@ func execCommand(name string, args ...string) ([]byte, []byte, error) {
 	return out, errBytes, cmdErr
 }
 
-func runOpenCodeCommand(prompt, agent string, model *openCodeModel) (string, error) {
+func runOpenCodeCommand(ctx context.Context, prompt, agent string, model *openCodeModel) (string, error) {
 	args := []string{"run", "--format", "json", "--pure", "--agent", agent}
 	if model != nil && model.ProviderID != "" && model.ModelID != "" {
 		args = append(args, "--model", model.ProviderID+"/"+model.ModelID)
 	}
 	args = append(args, prompt)
 
-	out, stderr, err := execCommandFunc("opencode", args...)
+	out, stderr, err := execCommandFunc(ctx, "opencode", args...)
 	if err != nil {
 		if len(out) > 0 {
 			if ndjsonErr := parseOpenCodeNDJSONError(out); ndjsonErr != "" {
@@ -163,7 +167,17 @@ func AskOpenCode(c *fiber.Ctx) error {
 		agent = defaultOpenCodeAgent
 	}
 
-	reply, err := runOpenCodeCommand(modelValidation.Prompt, agent, model)
+	timeoutSec := defaultAskTimeoutSec
+	if envSec := os.Getenv("OPENCODE_ASK_TIMEOUT_SEC"); envSec != "" {
+		if parsed, err := strconv.Atoi(envSec); err == nil && parsed >= 1 {
+			timeoutSec = parsed
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(c.Context(), time.Duration(timeoutSec)*time.Second)
+	defer cancel()
+
+	reply, err := runOpenCodeCommand(ctx, modelValidation.Prompt, agent, model)
 	if err != nil {
 		log.Println("opencode run error:", err)
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{

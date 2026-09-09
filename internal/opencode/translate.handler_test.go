@@ -1,6 +1,7 @@
 package opencode
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -24,7 +25,7 @@ func setTranslateExecMock(t *testing.T, cfg translateMockConfig) *[][]string {
 	callCount := 0
 	captured := &[][]string{}
 	orig := execCommandFunc
-	execCommandFunc = func(name string, args ...string) ([]byte, []byte, error) {
+	execCommandFunc = func(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
 		callCount++
 		*captured = append(*captured, append([]string{name}, args...))
 
@@ -50,7 +51,7 @@ func setServerErrMock(t *testing.T, errMsg string) *int {
 	t.Helper()
 	callCount := 0
 	orig := execCommandFunc
-	execCommandFunc = func(name string, args ...string) ([]byte, []byte, error) {
+	execCommandFunc = func(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
 		callCount++
 		output := fmt.Sprintf(`{"type":"error","error":{"data":{"message":"%s"}}}`, errMsg)
 		return []byte(output), nil, fmt.Errorf("exit status 1")
@@ -599,7 +600,7 @@ func TestTranslate_ServerErrorRetrySucceeds(t *testing.T) {
 
 	callCount := 0
 	orig := execCommandFunc
-	execCommandFunc = func(name string, args ...string) ([]byte, []byte, error) {
+	execCommandFunc = func(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
 		callCount++
 		if callCount == 1 {
 			output := `{"type":"error","error":{"data":{"message":"Rate limit exceeded"}}}`
@@ -643,7 +644,7 @@ func TestTranslate_NonRetryableExecErrorNoRetry(t *testing.T) {
 
 	callCount := 0
 	orig := execCommandFunc
-	execCommandFunc = func(name string, args ...string) ([]byte, []byte, error) {
+	execCommandFunc = func(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
 		callCount++
 		return nil, nil, fmt.Errorf("executable not found")
 	}
@@ -687,7 +688,7 @@ func TestTranslate_PermanentModelErrorNoRetry(t *testing.T) {
 
 	callCount := 0
 	orig := execCommandFunc
-	execCommandFunc = func(name string, args ...string) ([]byte, []byte, error) {
+	execCommandFunc = func(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
 		callCount++
 		output := `{"type":"error","error":{"data":{"message":"Model not found: opencode/deepseek-v4-flash-free. Did you mean: hy3-free?"}}}`
 		return []byte(output), nil, fmt.Errorf("exit status 1")
@@ -732,7 +733,7 @@ func TestTranslate_PermanentAuthErrorNoRetry(t *testing.T) {
 
 	callCount := 0
 	orig := execCommandFunc
-	execCommandFunc = func(name string, args ...string) ([]byte, []byte, error) {
+	execCommandFunc = func(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
 		callCount++
 		output := `{"type":"error","error":{"data":{"message":"Unauthorized: Invalid API key"}}}`
 		return []byte(output), nil, fmt.Errorf("exit status 1")
@@ -770,7 +771,7 @@ func TestTranslate_RetryPreservesOtherRows(t *testing.T) {
 
 	callCount := 0
 	orig := execCommandFunc
-	execCommandFunc = func(name string, args ...string) ([]byte, []byte, error) {
+	execCommandFunc = func(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
 		callCount++
 		switch callCount {
 		case 1:

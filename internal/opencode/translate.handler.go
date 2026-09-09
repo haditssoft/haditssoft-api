@@ -1,6 +1,7 @@
 package opencode
 
 import (
+	"context"
 	"crypto/subtle"
 	"log"
 	"os"
@@ -165,7 +166,7 @@ func TranslateHadiths(c *fiber.Ctx) error {
 
 		prompt := buildTranslatePrompt(arabic, indonesia)
 
-		reply, err := translateWithRetry(prompt, model)
+		reply, err := translateWithRetry(c.Context(), prompt, model)
 		if err != nil {
 			log.Println("translate opencode error:", err)
 			failed = append(failed, translateResult{Nomer: row.Nomer, Error: err.Error()})
@@ -205,10 +206,10 @@ func buildTranslatePrompt(arabic, indonesia string) string {
 // translateWithRetry calls opencode and retries on transient server errors
 // (e.g. rate limit, endpoint unavailable). Permanent errors (model not found,
 // auth failures) are returned immediately without retry.
-func translateWithRetry(prompt string, model *openCodeModel) (string, error) {
+func translateWithRetry(ctx context.Context, prompt string, model *openCodeModel) (string, error) {
 	var lastErr error
 	for attempt := 1; attempt <= translateMaxRetries; attempt++ {
-		reply, err := runOpenCodeCommand(prompt, "translate", model)
+		reply, err := runOpenCodeCommand(ctx, prompt, "translate", model)
 		if err == nil {
 			if attempt > 1 {
 				log.Printf("translate succeeded on attempt %d/%d\n", attempt, translateMaxRetries)

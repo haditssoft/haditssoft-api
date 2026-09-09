@@ -2,13 +2,16 @@ package opencode
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/haditssoft/haditssoft-backend/internal/shared/auth"
 	"github.com/haditssoft/haditssoft-backend/internal/shared/database"
@@ -139,7 +142,7 @@ func decodeJSON(t *testing.T, resp *http.Response, dest interface{}) {
 func setExecOutput(t *testing.T, output string, execErr error) {
 	t.Helper()
 	orig := execCommandFunc
-	execCommandFunc = func(name string, args ...string) ([]byte, []byte, error) {
+	execCommandFunc = func(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
 		return []byte(output), nil, execErr
 	}
 	t.Cleanup(func() { execCommandFunc = orig })
@@ -151,7 +154,7 @@ func setExecCapture(t *testing.T, output string, execErr error) *[][]string {
 	t.Helper()
 	captured := &[][]string{}
 	orig := execCommandFunc
-	execCommandFunc = func(name string, args ...string) ([]byte, []byte, error) {
+	execCommandFunc = func(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
 		*captured = append(*captured, append([]string{name}, args...))
 		return []byte(output), nil, execErr
 	}
@@ -715,12 +718,12 @@ func TestRunOpenCodeCommand_ServerErrorMessage(t *testing.T) {
 		`{"type":"error","timestamp":1787809750639,"error":{"name":"UnknownError","data":{"message":"Unexpected server error. Check server logs for details.","ref":"err_9d757de8"}}}`
 
 	orig := execCommandFunc
-	execCommandFunc = func(name string, args ...string) ([]byte, []byte, error) {
+	execCommandFunc = func(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
 		return []byte(serverErrOutput), nil, fmt.Errorf("exit status 1")
 	}
 	t.Cleanup(func() { execCommandFunc = orig })
 
-	_, err := runOpenCodeCommand("test prompt", "translate", nil)
+	_, err := runOpenCodeCommand(context.Background(), "test prompt", "translate", nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -736,12 +739,12 @@ func TestRunOpenCodeCommand_ServerErrorWithStderr(t *testing.T) {
 		`{"type":"error","timestamp":1,"error":{"name":"UnknownError","data":{"message":"Unexpected server error. Check server logs for details.","ref":"err_test"}}}`
 
 	orig := execCommandFunc
-	execCommandFunc = func(name string, args ...string) ([]byte, []byte, error) {
+	execCommandFunc = func(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
 		return []byte(serverErrOutput), []byte("ProviderModelNotFoundError: Model not found: opencode/deepseek-v4-flash-free"), fmt.Errorf("exit status 1")
 	}
 	t.Cleanup(func() { execCommandFunc = orig })
 
-	_, err := runOpenCodeCommand("test prompt", "translate", nil)
+	_, err := runOpenCodeCommand(context.Background(), "test prompt", "translate", nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -759,12 +762,12 @@ func TestRunOpenCodeCommand_ServerErrorNonGenericNoStderr(t *testing.T) {
 	serverErrOutput := `{"type":"error","error":{"data":{"message":"Rate limit exceeded. Try again later."}}}`
 
 	orig := execCommandFunc
-	execCommandFunc = func(name string, args ...string) ([]byte, []byte, error) {
+	execCommandFunc = func(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
 		return []byte(serverErrOutput), []byte("some stderr noise"), fmt.Errorf("exit status 1")
 	}
 	t.Cleanup(func() { execCommandFunc = orig })
 
-	_, err := runOpenCodeCommand("test prompt", "translate", nil)
+	_, err := runOpenCodeCommand(context.Background(), "test prompt", "translate", nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -778,12 +781,12 @@ func TestRunOpenCodeCommand_ServerErrorNonGenericNoStderr(t *testing.T) {
 
 func TestRunOpenCodeCommand_ExecFailureWithStderr(t *testing.T) {
 	orig := execCommandFunc
-	execCommandFunc = func(name string, args ...string) ([]byte, []byte, error) {
+	execCommandFunc = func(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
 		return nil, []byte("command not found in PATH"), fmt.Errorf("exec: \"opencode\": executable file not found in $PATH")
 	}
 	t.Cleanup(func() { execCommandFunc = orig })
 
-	_, err := runOpenCodeCommand("test prompt", "plan", nil)
+	_, err := runOpenCodeCommand(context.Background(), "test prompt", "plan", nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -799,12 +802,12 @@ func TestRunOpenCodeCommand_ExecFailureWithStderr(t *testing.T) {
 
 func TestRunOpenCodeCommand_ExecFailureNoOutput(t *testing.T) {
 	orig := execCommandFunc
-	execCommandFunc = func(name string, args ...string) ([]byte, []byte, error) {
+	execCommandFunc = func(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
 		return nil, nil, fmt.Errorf("executable not found")
 	}
 	t.Cleanup(func() { execCommandFunc = orig })
 
-	_, err := runOpenCodeCommand("test prompt", "plan", nil)
+	_, err := runOpenCodeCommand(context.Background(), "test prompt", "plan", nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -817,12 +820,12 @@ func TestRunOpenCodeCommand_ExecFailureNoOutput(t *testing.T) {
 
 func TestRunOpenCodeCommand_ExecFailureWithNoErrorEvent(t *testing.T) {
 	orig := execCommandFunc
-	execCommandFunc = func(name string, args ...string) ([]byte, []byte, error) {
+	execCommandFunc = func(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
 		return []byte(`{"type":"step_start"}`), nil, fmt.Errorf("exit status 1")
 	}
 	t.Cleanup(func() { execCommandFunc = orig })
 
-	_, err := runOpenCodeCommand("test prompt", "plan", nil)
+	_, err := runOpenCodeCommand(context.Background(), "test prompt", "plan", nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -835,12 +838,12 @@ func TestRunOpenCodeCommand_ExecFailureWithNoErrorEvent(t *testing.T) {
 
 func TestRunOpenCodeCommand_Success(t *testing.T) {
 	orig := execCommandFunc
-	execCommandFunc = func(name string, args ...string) ([]byte, []byte, error) {
+	execCommandFunc = func(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
 		return []byte(`{"type":"text","part":{"text":"translated text"}}`), nil, nil
 	}
 	t.Cleanup(func() { execCommandFunc = orig })
 
-	got, err := runOpenCodeCommand("test prompt", "translate", nil)
+	got, err := runOpenCodeCommand(context.Background(), "test prompt", "translate", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -852,14 +855,14 @@ func TestRunOpenCodeCommand_Success(t *testing.T) {
 func TestRunOpenCodeCommand_SuccessWithModel(t *testing.T) {
 	var capturedArgs []string
 	orig := execCommandFunc
-	execCommandFunc = func(name string, args ...string) ([]byte, []byte, error) {
+	execCommandFunc = func(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
 		capturedArgs = append([]string{name}, args...)
 		return []byte(`{"type":"text","part":{"text":"ok"}}`), nil, nil
 	}
 	t.Cleanup(func() { execCommandFunc = orig })
 
 	model := &openCodeModel{ProviderID: "opencode", ModelID: "deepseek-v4-flash-free"}
-	got, err := runOpenCodeCommand("hello", "translate", model)
+	got, err := runOpenCodeCommand(context.Background(), "hello", "translate", model)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -879,13 +882,13 @@ func TestRunOpenCodeCommand_SuccessWithModel(t *testing.T) {
 func TestRunOpenCodeCommand_PureFlagPresent(t *testing.T) {
 	var capturedArgs []string
 	orig := execCommandFunc
-	execCommandFunc = func(name string, args ...string) ([]byte, []byte, error) {
+	execCommandFunc = func(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
 		capturedArgs = append([]string{name}, args...)
 		return []byte(`{"type":"text","part":{"text":"ok"}}`), nil, nil
 	}
 	t.Cleanup(func() { execCommandFunc = orig })
 
-	_, err := runOpenCodeCommand("test", "translate", nil)
+	_, err := runOpenCodeCommand(context.Background(), "test", "translate", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -897,12 +900,12 @@ func TestRunOpenCodeCommand_PureFlagPresent(t *testing.T) {
 
 func TestRunOpenCodeCommand_NDJSONIgnoresStderrNoise(t *testing.T) {
 	orig := execCommandFunc
-	execCommandFunc = func(name string, args ...string) ([]byte, []byte, error) {
+	execCommandFunc = func(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
 		return []byte(`{"type":"step_start"}` + "\n" + `{"type":"text","part":{"text":"clean output"}}` + "\n" + `{"type":"step_finish"}`), nil, nil
 	}
 	t.Cleanup(func() { execCommandFunc = orig })
 
-	got, err := runOpenCodeCommand("test", "translate", nil)
+	got, err := runOpenCodeCommand(context.Background(), "test", "translate", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -931,6 +934,165 @@ func TestIsGenericServerError(t *testing.T) {
 				t.Errorf("isGenericServerError(%q) = %v, want %v", tt.msg, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRunOpenCodeCommand_ContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	orig := execCommandFunc
+	execCommandFunc = func(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
+		<-ctx.Done()
+		return nil, nil, ctx.Err()
+	}
+	t.Cleanup(func() { execCommandFunc = orig })
+
+	cancel()
+	_, err := runOpenCodeCommand(ctx, "test prompt", "agent", nil)
+	if err == nil {
+		t.Fatal("expected error from cancelled context, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
+	}
+}
+
+func TestRunOpenCodeCommand_ContextTimeout(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	orig := execCommandFunc
+	execCommandFunc = func(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
+		<-ctx.Done()
+		return nil, nil, ctx.Err()
+	}
+	t.Cleanup(func() { execCommandFunc = orig })
+
+	_, err := runOpenCodeCommand(ctx, "test prompt", "agent", nil)
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want context.DeadlineExceeded", err)
+	}
+}
+
+func TestRoute_AskTimeoutKillsSlowCommand(t *testing.T) {
+	os.Setenv("OPENCODE_ASK_TIMEOUT_SEC", "1")
+	t.Cleanup(func() { os.Unsetenv("OPENCODE_ASK_TIMEOUT_SEC") })
+
+	orig := execCommandFunc
+	execCommandFunc = func(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
+		<-ctx.Done()
+		return nil, nil, ctx.Err()
+	}
+	t.Cleanup(func() { execCommandFunc = orig })
+
+	app := setupTestApp(t)
+	jwt, err := auth.GenerateAccessToken(1, "test@example.com")
+	if err != nil {
+		t.Fatalf("failed to generate token: %v", err)
+	}
+
+	body := map[string]interface{}{"prompt": "hello"}
+	resp := makeRequestWithToken(t, app, "POST", "/ai/ask", body, jwt)
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("status = %d, want %d (timeout should yield 502)", resp.StatusCode, http.StatusBadGateway)
+	}
+}
+
+func TestRoute_AskDefaultTimeoutApplied(t *testing.T) {
+	var capturedCtx context.Context
+	orig := execCommandFunc
+	execCommandFunc = func(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
+		capturedCtx = ctx
+		return []byte(`{"type":"text","part":{"text":"ok"}}`), nil, nil
+	}
+	t.Cleanup(func() { execCommandFunc = orig })
+
+	os.Unsetenv("OPENCODE_ASK_TIMEOUT_SEC")
+	t.Cleanup(func() { os.Unsetenv("OPENCODE_ASK_TIMEOUT_SEC") })
+
+	app := setupTestApp(t)
+	jwt, _ := auth.GenerateAccessToken(1, "test@example.com")
+
+	body := map[string]interface{}{"prompt": "hello"}
+	resp := makeRequestWithToken(t, app, "POST", "/ai/ask", body, jwt)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	deadline, ok := capturedCtx.Deadline()
+	if !ok {
+		t.Fatal("expected context to have a deadline")
+	}
+	remaining := time.Until(deadline)
+	if remaining < 80*time.Second || remaining > 95*time.Second {
+		t.Errorf("deadline remaining = %v, want ~90s", remaining)
+	}
+}
+
+func TestRoute_AskCustomTimeoutFromEnv(t *testing.T) {
+	var capturedCtx context.Context
+	orig := execCommandFunc
+	execCommandFunc = func(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
+		capturedCtx = ctx
+		return []byte(`{"type":"text","part":{"text":"ok"}}`), nil, nil
+	}
+	t.Cleanup(func() { execCommandFunc = orig })
+
+	os.Setenv("OPENCODE_ASK_TIMEOUT_SEC", "30")
+	t.Cleanup(func() { os.Unsetenv("OPENCODE_ASK_TIMEOUT_SEC") })
+
+	app := setupTestApp(t)
+	jwt, _ := auth.GenerateAccessToken(1, "test@example.com")
+
+	body := map[string]interface{}{"prompt": "hello"}
+	resp := makeRequestWithToken(t, app, "POST", "/ai/ask", body, jwt)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	deadline, ok := capturedCtx.Deadline()
+	if !ok {
+		t.Fatal("expected context to have a deadline")
+	}
+	remaining := time.Until(deadline)
+	if remaining < 25*time.Second || remaining > 35*time.Second {
+		t.Errorf("deadline remaining = %v, want ~30s", remaining)
+	}
+}
+
+func TestRoute_AskInvalidTimeoutFallsBackToDefault(t *testing.T) {
+	var capturedCtx context.Context
+	orig := execCommandFunc
+	execCommandFunc = func(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
+		capturedCtx = ctx
+		return []byte(`{"type":"text","part":{"text":"ok"}}`), nil, nil
+	}
+	t.Cleanup(func() { execCommandFunc = orig })
+
+	os.Setenv("OPENCODE_ASK_TIMEOUT_SEC", "0")
+	t.Cleanup(func() { os.Unsetenv("OPENCODE_ASK_TIMEOUT_SEC") })
+
+	app := setupTestApp(t)
+	jwt, _ := auth.GenerateAccessToken(1, "test@example.com")
+
+	body := map[string]interface{}{"prompt": "hello"}
+	resp := makeRequestWithToken(t, app, "POST", "/ai/ask", body, jwt)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	deadline, ok := capturedCtx.Deadline()
+	if !ok {
+		t.Fatal("expected context to have a deadline")
+	}
+	remaining := time.Until(deadline)
+	if remaining < 80*time.Second || remaining > 95*time.Second {
+		t.Errorf("deadline remaining = %v, want default ~90s when env is invalid", remaining)
 	}
 }
 
