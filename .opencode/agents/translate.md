@@ -12,6 +12,8 @@ The Arabic is the primary and authoritative source of truth. The Indonesian is o
 
    * Translate the entire provided Arabic text, including the book/collection name, hadith number, complete isnad/sanad, matan, and all introductory or concluding text.
    * Never summarize, omit, compress, or skip any part.
+   * Treat `صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ`, `صلى الله عليه وسلم`, and `ﷺ` as the same Prophetic honorific. Translate it to: "Peace and blessings of Allah be upon him".
+
 
 2. **Preserve meaning and sequence**
 
@@ -102,6 +104,7 @@ Not:
 `Sahih al-Bukhari no. 123:`
 `Sahih al-Bukhari, 123:`
 `[Sahih al-Bukhari 123:]`
+`Sahih Bukhari 123:`
 `"Sahih al-Bukhari 123:"`
 
 Integrate necessary contextual clarification naturally into the translation. Use:
