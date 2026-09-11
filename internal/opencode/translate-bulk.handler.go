@@ -1,6 +1,7 @@
 package opencode
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -20,6 +21,12 @@ const (
 type bulkHadithInput struct {
 	Arabic    string `json:"arabic"`
 	Indonesia string `json:"indonesia"`
+}
+
+// bulkBatchResult holds the outcome of one AI batch.
+type bulkBatchResult struct {
+	updated int
+	failed  []translateResult
 }
 
 // buildBulkTranslatePrompt marshals the rows into the JSON payload fed to the
@@ -76,9 +83,83 @@ func parseBulkTranslationReply(reply string) (map[string]string, error) {
 	return nil, errors.New("invalid JSON in AI response")
 }
 
-// TranslateHadithsBulk translates several hadiths in a single AI call. It reads
-// the same untranslated rows as TranslateHadiths, feeds them to the agent as one
-// JSON payload keyed by Nomer, then writes the returned translations back.
+// processBulkBatch translates one batch of rows in a single AI call: builds the
+// keyed JSON payload, sends it to the translate-bulk agent, parses the JSON
+// reply, and writes the English translations back to the database.
+func processBulkBatch(ctx context.Context, kitabName string, rows []translationRow, model *openCodeModel) bulkBatchResult {
+	allFailed := func(errMsg string) []translateResult {
+		failed := make([]translateResult, 0, len(rows))
+		for _, row := range rows {
+			failed = append(failed, translateResult{Nomer: row.Nomer, Error: errMsg})
+		}
+		return failed
+	}
+
+	if len(rows) == 0 {
+		return bulkBatchResult{}
+	}
+
+	prompt, err := buildBulkTranslatePrompt(rows)
+	if err != nil {
+		log.Println("translate bulk prompt error:", err)
+		return bulkBatchResult{failed: allFailed(err.Error())}
+	}
+
+	reply, err := translateWithRetryAgent(ctx, prompt, bulkTranslateAgent, model)
+	if err != nil {
+		log.Println("translate bulk opencode error:", err)
+		return bulkBatchResult{failed: allFailed(err.Error())}
+	}
+
+	translations, err := parseBulkTranslationReply(reply)
+	if err != nil {
+		log.Println("translate bulk parse error:", err)
+		return bulkBatchResult{failed: allFailed(err.Error())}
+	}
+
+	requested := make(map[uint]bool, len(rows))
+	for _, row := range rows {
+		requested[row.Nomer] = true
+	}
+
+	result := bulkBatchResult{}
+
+	for _, row := range rows {
+		key := strconv.FormatUint(uint64(row.Nomer), 10)
+		val, ok := translations[key]
+		if !ok {
+			log.Println("translate bulk missing key:", key)
+			result.failed = append(result.failed, translateResult{Nomer: row.Nomer, Error: "missing key in AI response"})
+			continue
+		}
+		if strings.TrimSpace(val) == "" {
+			result.failed = append(result.failed, translateResult{Nomer: row.Nomer, Error: "empty AI response"})
+			continue
+		}
+
+		if err := database.DB.Table(kitabName).
+			Where("Nomer = ?", row.Nomer).
+			Update("English", val).Error; err != nil {
+			log.Println("translate bulk update error:", err)
+			result.failed = append(result.failed, translateResult{Nomer: row.Nomer, Error: err.Error()})
+			continue
+		}
+		result.updated++
+	}
+
+	for key := range translations {
+		nomer, parseErr := strconv.ParseUint(key, 10, 64)
+		if parseErr != nil || !requested[uint(nomer)] {
+			log.Println("translate bulk ignoring unknown key in AI response:", key)
+		}
+	}
+
+	return result
+}
+
+// TranslateHadithsBulk translates several hadiths in a single AI call by
+// default. With ?all=1 it sweeps the whole table in batches of ?limit= rows
+// until no untranslated rows remain. ?maxBatches= caps the number of batches.
 func TranslateHadithsBulk(c *fiber.Ctx) error {
 	if !authorizeCronKey(c) {
 		return nil
@@ -102,37 +183,30 @@ func TranslateHadithsBulk(c *fiber.Ctx) error {
 		limit = parsed
 	}
 
-	var rows []translationRow
-	if err := database.DB.Table(kitabName).
-		Select("Nomer", "Arabic", "Indonesia").
-		Where("English IS NULL OR English = ''").
-		Order("Nomer ASC").
-		Limit(limit).
-		Find(&rows).Error; err != nil {
-		log.Println("translate bulk query error:", err)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"status":  "error",
-			"message": "failed to query hadith records",
-			"data":    nil,
-		})
+	sweepAll := false
+	if raw := c.Query("all"); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"status":  "error",
+				"message": "all must be a boolean",
+				"data":    nil,
+			})
+		}
+		sweepAll = parsed
 	}
 
-	if len(rows) == 0 {
-		return c.JSON(fiber.Map{
-			"processed": 0,
-			"updated":   0,
-			"failed":    []translateResult{},
-		})
-	}
-
-	prompt, err := buildBulkTranslatePrompt(rows)
-	if err != nil {
-		log.Println("translate bulk prompt error:", err)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"status":  "error",
-			"message": "failed to build translation payload",
-			"data":    nil,
-		})
+	maxBatches := 0
+	if raw := c.Query("maxBatches"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"status":  "error",
+				"message": "maxBatches must be a positive integer",
+				"data":    nil,
+			})
+		}
+		maxBatches = parsed
 	}
 
 	loadTranslateConfig()
@@ -147,75 +221,59 @@ func TranslateHadithsBulk(c *fiber.Ctx) error {
 		}
 	}
 
-	allFailed := func(errMsg string) []translateResult {
-		failed := make([]translateResult, 0, len(rows))
+	attempted := make(map[uint]bool)
+	totalProcessed := 0
+	totalUpdated := 0
+	totalFailed := make([]translateResult, 0)
+	batches := 0
+
+	for {
+		if maxBatches > 0 && batches >= maxBatches {
+			break
+		}
+
+		var rows []translationRow
+		q := database.DB.Table(kitabName).
+			Select("Nomer", "Arabic", "Indonesia").
+			Where("English IS NULL OR English = ''")
+		if len(attempted) > 0 {
+			keys := make([]uint, 0, len(attempted))
+			for k := range attempted {
+				keys = append(keys, k)
+			}
+			q = q.Where("Nomer NOT IN ?", keys)
+		}
+		if err := q.Order("Nomer ASC").Limit(limit).Find(&rows).Error; err != nil {
+			log.Println("translate bulk query error:", err)
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"status":  "error",
+				"message": "failed to query hadith records",
+				"data":    nil,
+			})
+		}
+
+		if len(rows) == 0 {
+			break
+		}
+
 		for _, row := range rows {
-			failed = append(failed, translateResult{Nomer: row.Nomer, Error: errMsg})
-		}
-		return failed
-	}
-
-	reply, err := translateWithRetryAgent(c.Context(), prompt, bulkTranslateAgent, model)
-	if err != nil {
-		log.Println("translate bulk opencode error:", err)
-		return c.JSON(fiber.Map{
-			"processed": len(rows),
-			"updated":   0,
-			"failed":    allFailed(err.Error()),
-		})
-	}
-
-	translations, err := parseBulkTranslationReply(reply)
-	if err != nil {
-		log.Println("translate bulk parse error:", err)
-		return c.JSON(fiber.Map{
-			"processed": len(rows),
-			"updated":   0,
-			"failed":    allFailed(err.Error()),
-		})
-	}
-
-	requested := make(map[uint]bool, len(rows))
-	for _, row := range rows {
-		requested[row.Nomer] = true
-	}
-
-	updated := 0
-	failed := make([]translateResult, 0)
-
-	for _, row := range rows {
-		key := strconv.FormatUint(uint64(row.Nomer), 10)
-		val, ok := translations[key]
-		if !ok {
-			log.Println("translate bulk missing key:", key)
-			failed = append(failed, translateResult{Nomer: row.Nomer, Error: "missing key in AI response"})
-			continue
-		}
-		if strings.TrimSpace(val) == "" {
-			failed = append(failed, translateResult{Nomer: row.Nomer, Error: "empty AI response"})
-			continue
+			attempted[row.Nomer] = true
 		}
 
-		if err := database.DB.Table(kitabName).
-			Where("Nomer = ?", row.Nomer).
-			Update("English", val).Error; err != nil {
-			log.Println("translate bulk update error:", err)
-			failed = append(failed, translateResult{Nomer: row.Nomer, Error: err.Error()})
-			continue
-		}
-		updated++
-	}
+		result := processBulkBatch(c.Context(), kitabName, rows, model)
+		totalProcessed += len(rows)
+		totalUpdated += result.updated
+		totalFailed = append(totalFailed, result.failed...)
+		batches++
 
-	for key := range translations {
-		nomer, parseErr := strconv.ParseUint(key, 10, 64)
-		if parseErr != nil || !requested[uint(nomer)] {
-			log.Println("translate bulk ignoring unknown key in AI response:", key)
+		if !sweepAll {
+			break
 		}
 	}
 
 	return c.JSON(fiber.Map{
-		"processed": len(rows),
-		"updated":   updated,
-		"failed":    failed,
+		"processed": totalProcessed,
+		"updated":   totalUpdated,
+		"failed":    totalFailed,
 	})
 }

@@ -1042,3 +1042,334 @@ func TestBulkTranslate_DefaultLimitApplied(t *testing.T) {
 		t.Errorf("got %d CLI calls, want 1", len(*captured))
 	}
 }
+
+// setSweepExecMock installs a mock that parses each prompt's JSON payload and
+// replies with {"<Nomer>": "english-<Nomer>"} for every key, so sweep-mode
+// assertions are independent of how batches are split. When failAtCall > 0 the
+// single matching call (1-based) fails like an exec error.
+func setSweepExecMock(t *testing.T, failAtCall int) *[][]string {
+	t.Helper()
+	callCount := 0
+	captured := &[][]string{}
+	orig := execCommandFunc
+	execCommandFunc = func(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
+		callCount++
+		*captured = append(*captured, append([]string{name}, args...))
+
+		if failAtCall > 0 && callCount == failAtCall {
+			return nil, nil, fmt.Errorf("opencode exec failed at call %d", callCount)
+		}
+
+		prompt := args[len(args)-1]
+		var payload map[string]struct {
+			Arabic    string `json:"arabic"`
+			Indonesia string `json:"indonesia"`
+		}
+		out := map[string]string{}
+		if err := json.Unmarshal([]byte(prompt), &payload); err == nil {
+			for k := range payload {
+				out[k] = "english-" + k
+			}
+		}
+		replyBytes, err := json.Marshal(out)
+		if err != nil {
+			return nil, nil, err
+		}
+		return bulkTextEvent(string(replyBytes)), nil, nil
+	}
+	t.Cleanup(func() { execCommandFunc = orig })
+	return captured
+}
+
+func TestBulkTranslate_InvalidAllParam(t *testing.T) {
+	setCronKey(t, "correct-secret")
+
+	app := setupTestApp(t)
+
+	for _, raw := range []string{"notabool", "maybe"} {
+		resp := makeRequest(t, app, "POST", "/ai/cron/translate/bulk/ShahihBukhari?key=correct-secret&all="+raw, nil)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("all=%q status = %d, want %d", raw, resp.StatusCode, http.StatusBadRequest)
+		}
+	}
+}
+
+func TestBulkTranslate_InvalidMaxBatches(t *testing.T) {
+	setCronKey(t, "correct-secret")
+
+	app := setupTestApp(t)
+
+	for _, raw := range []string{"abc", "0", "-5"} {
+		resp := makeRequest(t, app, "POST", "/ai/cron/translate/bulk/ShahihBukhari?key=correct-secret&maxBatches="+raw, nil)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("maxBatches=%q status = %d, want %d", raw, resp.StatusCode, http.StatusBadRequest)
+		}
+	}
+}
+
+func TestBulkTranslate_SingleBatchRemainsDefault(t *testing.T) {
+	setCronKey(t, "correct-secret")
+	captured := setSweepExecMock(t, 0)
+
+	app := setupTestApp(t)
+	seedShahihBukhari(t, []map[string]interface{}{
+		{"Nomer": 1, "Arabic": "hadith one", "Indonesia": "satu", "English": nil},
+		{"Nomer": 2, "Arabic": "hadith two", "Indonesia": "dua", "English": nil},
+		{"Nomer": 3, "Arabic": "hadith three", "Indonesia": "tiga", "English": nil},
+		{"Nomer": 4, "Arabic": "hadith four", "Indonesia": "empat", "English": nil},
+	})
+
+	// No ?all= flag: exactly one batch of 1 row runs, even though more remain.
+	resp := makeRequest(t, app, "POST", "/ai/cron/translate/bulk/ShahihBukhari?key=correct-secret&limit=1", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var body bulkTranslateResponse
+	decodeJSON(t, resp, &body)
+	if body.Processed != 1 {
+		t.Errorf("processed = %d, want 1", body.Processed)
+	}
+	if body.Updated != 1 {
+		t.Errorf("updated = %d, want 1", body.Updated)
+	}
+	if len(*captured) != 1 {
+		t.Errorf("got %d CLI calls, want 1", len(*captured))
+	}
+
+	assertEnglish(t, 1, "english-1")
+	assertEnglishEmpty(t, 2)
+	assertEnglishEmpty(t, 3)
+	assertEnglishEmpty(t, 4)
+}
+
+func TestBulkTranslate_SweepProcessesAllBatches(t *testing.T) {
+	setCronKey(t, "correct-secret")
+	captured := setSweepExecMock(t, 0)
+
+	app := setupTestApp(t)
+	seedShahihBukhari(t, []map[string]interface{}{
+		{"Nomer": 5, "Arabic": "hadith five", "Indonesia": "lima", "English": nil},
+		{"Nomer": 1, "Arabic": "hadith one", "Indonesia": "satu", "English": nil},
+		{"Nomer": 3, "Arabic": "hadith three", "Indonesia": "tiga", "English": nil},
+		{"Nomer": 2, "Arabic": "hadith two", "Indonesia": "dua", "English": nil},
+		{"Nomer": 4, "Arabic": "hadith four", "Indonesia": "empat", "English": nil},
+	})
+
+	resp := makeRequest(t, app, "POST", "/ai/cron/translate/bulk/ShahihBukhari?key=correct-secret&all=1&limit=2", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var body bulkTranslateResponse
+	decodeJSON(t, resp, &body)
+	if body.Processed != 5 {
+		t.Errorf("processed = %d, want 5", body.Processed)
+	}
+	if body.Updated != 5 {
+		t.Errorf("updated = %d, want 5", body.Updated)
+	}
+	if len(body.Failed) != 0 {
+		t.Errorf("failed = %v, want empty", body.Failed)
+	}
+	if len(*captured) != 3 {
+		t.Errorf("got %d CLI calls, want 3 (5 rows / limit 2)", len(*captured))
+	}
+
+	assertEnglish(t, 1, "english-1")
+	assertEnglish(t, 2, "english-2")
+	assertEnglish(t, 3, "english-3")
+	assertEnglish(t, 4, "english-4")
+	assertEnglish(t, 5, "english-5")
+}
+
+func TestBulkTranslate_SweepOrderedByNomer(t *testing.T) {
+	setCronKey(t, "correct-secret")
+	captured := setSweepExecMock(t, 0)
+
+	app := setupTestApp(t)
+	seedShahihBukhari(t, []map[string]interface{}{
+		{"Nomer": 100, "Arabic": "hadith one hundred", "Indonesia": "seratus", "English": nil},
+		{"Nomer": 2, "Arabic": "hadith two", "Indonesia": "dua", "English": nil},
+		{"Nomer": 50, "Arabic": "hadith fifty", "Indonesia": "lima puluh", "English": nil},
+	})
+
+	resp := makeRequest(t, app, "POST", "/ai/cron/translate/bulk/ShahihBukhari?key=correct-secret&all=1&limit=1", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var body bulkTranslateResponse
+	decodeJSON(t, resp, &body)
+	if body.Processed != 3 {
+		t.Errorf("processed = %d, want 3", body.Processed)
+	}
+	if body.Updated != 3 {
+		t.Errorf("updated = %d, want 3", body.Updated)
+	}
+
+	// Batches must advance Nomer ASC: 2 first, then 50, then 100.
+	for i, want := range []uint{2, 50, 100} {
+		args := (*captured)[i]
+		prompt := args[len(args)-1]
+		if !strings.Contains(prompt, fmt.Sprintf(`"%d":`, want)) {
+			t.Errorf("batch %d prompt should contain key %d: %q", i, want, prompt)
+		}
+	}
+}
+
+func TestBulkTranslate_SweepNoRowsNoCalls(t *testing.T) {
+	setCronKey(t, "correct-secret")
+	captured := setSweepExecMock(t, 0)
+
+	app := setupTestApp(t)
+	seedShahihBukhari(t, []map[string]interface{}{
+		{"Nomer": 1, "Arabic": "hadith one", "Indonesia": "satu", "English": "already translated"},
+		{"Nomer": 2, "Arabic": "hadith two", "Indonesia": "dua", "English": "already translated"},
+	})
+
+	resp := makeRequest(t, app, "POST", "/ai/cron/translate/bulk/ShahihBukhari?key=correct-secret&all=1", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var body bulkTranslateResponse
+	decodeJSON(t, resp, &body)
+	if body.Processed != 0 {
+		t.Errorf("processed = %d, want 0", body.Processed)
+	}
+	if body.Updated != 0 {
+		t.Errorf("updated = %d, want 0", body.Updated)
+	}
+	if len(*captured) != 0 {
+		t.Errorf("got %d CLI calls, want 0", len(*captured))
+	}
+}
+
+func TestBulkTranslate_SweepMaxBatchesBounds(t *testing.T) {
+	setCronKey(t, "correct-secret")
+	captured := setSweepExecMock(t, 0)
+
+	app := setupTestApp(t)
+	seedShahihBukhari(t, []map[string]interface{}{
+		{"Nomer": 1, "Arabic": "hadith one", "Indonesia": "satu", "English": nil},
+		{"Nomer": 2, "Arabic": "hadith two", "Indonesia": "dua", "English": nil},
+		{"Nomer": 3, "Arabic": "hadith three", "Indonesia": "tiga", "English": nil},
+		{"Nomer": 4, "Arabic": "hadith four", "Indonesia": "empat", "English": nil},
+		{"Nomer": 5, "Arabic": "hadith five", "Indonesia": "lima", "English": nil},
+	})
+
+	resp := makeRequest(t, app, "POST", "/ai/cron/translate/bulk/ShahihBukhari?key=correct-secret&all=1&limit=1&maxBatches=2", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var body bulkTranslateResponse
+	decodeJSON(t, resp, &body)
+	if body.Processed != 2 {
+		t.Errorf("processed = %d, want 2 (capped by maxBatches)", body.Processed)
+	}
+	if body.Updated != 2 {
+		t.Errorf("updated = %d, want 2", body.Updated)
+	}
+	if len(body.Failed) != 0 {
+		t.Errorf("failed = %v, want empty", body.Failed)
+	}
+	if len(*captured) != 2 {
+		t.Errorf("got %d CLI calls, want 2", len(*captured))
+	}
+
+	assertEnglish(t, 1, "english-1")
+	assertEnglish(t, 2, "english-2")
+	assertEnglishEmpty(t, 3)
+	assertEnglishEmpty(t, 4)
+	assertEnglishEmpty(t, 5)
+}
+
+func TestBulkTranslate_SweepFirstBatchFailsContinues(t *testing.T) {
+	setCronKey(t, "correct-secret")
+	captured := setSweepExecMock(t, 1)
+
+	app := setupTestApp(t)
+	seedShahihBukhari(t, []map[string]interface{}{
+		{"Nomer": 1, "Arabic": "hadith one", "Indonesia": "satu", "English": nil},
+		{"Nomer": 2, "Arabic": "hadith two", "Indonesia": "dua", "English": nil},
+		{"Nomer": 3, "Arabic": "hadith three", "Indonesia": "tiga", "English": nil},
+	})
+
+	// The first batch (Nomer 1) fails; the sweep must continue with Nomer 2 and 3.
+	resp := makeRequest(t, app, "POST", "/ai/cron/translate/bulk/ShahihBukhari?key=correct-secret&all=1&limit=1", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var body bulkTranslateResponse
+	decodeJSON(t, resp, &body)
+	if body.Processed != 3 {
+		t.Errorf("processed = %d, want 3", body.Processed)
+	}
+	if body.Updated != 2 {
+		t.Errorf("updated = %d, want 2", body.Updated)
+	}
+	if len(body.Failed) != 1 {
+		t.Fatalf("failed = %v, want 1 entry", body.Failed)
+	}
+	if body.Failed[0].Nomer != 1 {
+		t.Errorf("failed nomer = %d, want 1", body.Failed[0].Nomer)
+	}
+	wantErr := "opencode run failed: opencode exec failed at call 1"
+	if body.Failed[0].Error != wantErr {
+		t.Errorf("failed error = %q, want %q", body.Failed[0].Error, wantErr)
+	}
+	if len(*captured) != 3 {
+		t.Errorf("got %d CLI calls, want 3 (failed row must be skipped to avoid an infinite loop)", len(*captured))
+	}
+
+	assertEnglishEmpty(t, 1)
+	assertEnglish(t, 2, "english-2")
+	assertEnglish(t, 3, "english-3")
+}
+
+func TestBulkTranslate_SweepAllBatchesFailTerminates(t *testing.T) {
+	setCronKey(t, "correct-secret")
+
+	callCount := 0
+	orig := execCommandFunc
+	execCommandFunc = func(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
+		callCount++
+		return nil, nil, fmt.Errorf("opencode exec failed at call %d", callCount)
+	}
+	t.Cleanup(func() { execCommandFunc = orig })
+
+	app := setupTestApp(t)
+	seedShahihBukhari(t, []map[string]interface{}{
+		{"Nomer": 1, "Arabic": "hadith one", "Indonesia": "satu", "English": nil},
+		{"Nomer": 2, "Arabic": "hadith two", "Indonesia": "dua", "English": nil},
+		{"Nomer": 3, "Arabic": "hadith three", "Indonesia": "tiga", "English": nil},
+	})
+
+	resp := makeRequest(t, app, "POST", "/ai/cron/translate/bulk/ShahihBukhari?key=correct-secret&all=1&limit=1", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var body bulkTranslateResponse
+	decodeJSON(t, resp, &body)
+	if body.Processed != 3 {
+		t.Errorf("processed = %d, want 3", body.Processed)
+	}
+	if body.Updated != 0 {
+		t.Errorf("updated = %d, want 0", body.Updated)
+	}
+	if len(body.Failed) != 3 {
+		t.Errorf("failed = %v, want 3 entries", body.Failed)
+	}
+	// Even though every batch fails, the loop must terminate after 3 attempts.
+	if callCount != 3 {
+		t.Errorf("call count = %d, want 3 (must not loop forever)", callCount)
+	}
+
+	assertEnglishEmpty(t, 1)
+	assertEnglishEmpty(t, 2)
+	assertEnglishEmpty(t, 3)
+}

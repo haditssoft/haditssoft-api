@@ -196,6 +196,7 @@ Two search strategies available, frontend chooses which to call:
 - Writes each translation back via `UPDATE ... SET English = ? WHERE Nomer = ?`; missing/empty keys for requested Numers are collected in `failed`; keys in the reply that were NOT requested are ignored (never written)
 - Response: `{"processed": n, "updated": m, "failed": [{"nomer": x, "error": "..."}]}`
 - Uses the request context (`c.Context()`) for subprocess cancellation
+- **Sweep mode** (`?all=1`): keeps draining the table in batches of `?limit=` until no untranslated rows remain. Batches advance by `Nomer ASC` and never resend an already-attempted Nomer, so a failing batch is reported in `failed` and skipped (guaranteed termination, no infinite loop). `?maxBatches=N` (≥ 1) caps the number of batches in one request; absent = unbounded. Without `?all=1`, a single batch is processed (default, backward compatible)
 
 ### AI Ask Endpoint (context + timeout)
 - `POST /ai/ask` (JWT-protected)
