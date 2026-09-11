@@ -91,24 +91,45 @@ func loadTranslateConfig() {
 	}
 }
 
-func TranslateHadiths(c *fiber.Ctx) error {
+// authorizeCronKey verifies the OPENCODE_CRON_KEY query parameter. It writes the
+// 401 response itself and returns false when the key is missing or wrong.
+func authorizeCronKey(c *fiber.Ctx) bool {
 	expectedKey := os.Getenv("OPENCODE_CRON_KEY")
 	providedKey := c.Query("key")
 	if expectedKey == "" || subtle.ConstantTimeCompare([]byte(providedKey), []byte(expectedKey)) != 1 {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+		_ = c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 			"status":  "error",
 			"message": "invalid or missing cron key",
 			"data":    nil,
 		})
+		return false
 	}
+	return true
+}
 
+// resolveKitabName validates the :kitabName param against the kitab whitelist.
+// It writes the 400 response itself and returns false when the kitab is unknown.
+func resolveKitabName(c *fiber.Ctx) (string, bool) {
 	kitabName := c.Params("kitabName")
 	if _, ok := models.GetIndexOfKitab[kitabName]; !ok {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+		_ = c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"status":  "error",
 			"message": "unknown kitab: " + kitabName,
 			"data":    nil,
 		})
+		return "", false
+	}
+	return kitabName, true
+}
+
+func TranslateHadiths(c *fiber.Ctx) error {
+	if !authorizeCronKey(c) {
+		return nil
+	}
+
+	kitabName, ok := resolveKitabName(c)
+	if !ok {
+		return nil
 	}
 
 	limit := defaultTranslateLimit
@@ -207,9 +228,14 @@ func buildTranslatePrompt(arabic, indonesia string) string {
 // (e.g. rate limit, endpoint unavailable). Permanent errors (model not found,
 // auth failures) are returned immediately without retry.
 func translateWithRetry(ctx context.Context, prompt string, model *openCodeModel) (string, error) {
+	return translateWithRetryAgent(ctx, prompt, "translate", model)
+}
+
+// translateWithRetryAgent is translateWithRetry for a configurable agent name.
+func translateWithRetryAgent(ctx context.Context, prompt, agent string, model *openCodeModel) (string, error) {
 	var lastErr error
 	for attempt := 1; attempt <= translateMaxRetries; attempt++ {
-		reply, err := runOpenCodeCommand(ctx, prompt, "translate", model)
+		reply, err := runOpenCodeCommand(ctx, prompt, agent, model)
 		if err == nil {
 			if attempt > 1 {
 				log.Printf("translate succeeded on attempt %d/%d\n", attempt, translateMaxRetries)

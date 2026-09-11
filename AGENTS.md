@@ -185,6 +185,18 @@ Two search strategies available, frontend chooses which to call:
 - Response: `{"processed": n, "updated": m, "failed": [{"nomer": x, "error": "..."}]}`
 - Uses the request context (`c.Context()`) for subprocess cancellation; batch aborts remaining rows if the client disconnects
 
+### Bulk Translate Endpoint (translate many hadiths in one AI call)
+- `POST /ai/cron/translate/bulk/:kitabName?key=<OPENCODE_CRON_KEY>&limit=10`
+- Same cron-key guard (`?key=`), kitab whitelist, and `?limit=` rules as the single-kitab cron endpoint
+- Selects the same untranslated rows (`English IS NULL OR English = ''`), then sends them all in ONE AI call:
+  - Input prompt is a JSON object keyed by hadith Nomer: `{"<Nomer>": {"arabic": "...", "indonesia": "..."}}` (Arabic primary, Indonesian reference)
+  - Agent: `opencode run --format json --pure --agent translate-bulk` — instructions in `.opencode/agents/translate-bulk.md`
+  - Reply must be a JSON object keyed by the SAME Numers with the English translation as each value: `{"<Nomer>": "<english>"}` (NOT a nested `{arabic, indonesia, english}` object)
+- Reply parsing is defensive: trims, tolerates markdown fences/pre/trailing text, extracts the `{...}` block, then unmarshals into `map[string]string`; forbidden/nested values or invalid JSON fail the whole batch
+- Writes each translation back via `UPDATE ... SET English = ? WHERE Nomer = ?`; missing/empty keys for requested Numers are collected in `failed`; keys in the reply that were NOT requested are ignored (never written)
+- Response: `{"processed": n, "updated": m, "failed": [{"nomer": x, "error": "..."}]}`
+- Uses the request context (`c.Context()`) for subprocess cancellation
+
 ### AI Ask Endpoint (context + timeout)
 - `POST /ai/ask` (JWT-protected)
 - The subprocess is bound to the HTTP request context via `exec.CommandContext`, so when the client disconnects, the `opencode` subprocess is killed immediately (no zombie processes)
