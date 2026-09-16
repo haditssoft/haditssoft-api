@@ -1,5 +1,9 @@
 # AGENTS.md — api-haditssoft
 
+## Stage After Work (mandatory)
+
+Every time you finish your work, run `git add` on your changes — and ONLY your changes. Exclude any pre-existing modified files that you did not touch. Then suggest a git commit message. Never commit or create the commit yourself.
+
 ## Build & Run
 
 ```bash
@@ -197,6 +201,30 @@ Two search strategies available, frontend chooses which to call:
 - Response: `{"processed": n, "updated": m, "failed": [{"nomer": x, "error": "..."}]}`
 - Uses the request context (`c.Context()`) for subprocess cancellation
 - **Sweep mode** (`?all=1`): keeps draining the table in batches of `?limit=` until no untranslated rows remain. Batches advance by `Nomer ASC` and never resend an already-attempted Nomer, so a failing batch is reported in `failed` and skipped (guaranteed termination, no infinite loop). `?maxBatches=N` (≥ 1) caps the number of batches in one request; absent = unbounded. Without `?all=1`, a single batch is processed (default, backward compatible)
+
+### Title Bulk Translate Endpoint (Kitab/Bab titles in one AI call)
+- `POST /ai/cron/translate/title/bulk/:kitabName?key=<OPENCODE_CRON_KEY>&limit=10&type=both`
+- Same cron-key guard (`?key=`), kitab whitelist, `?limit=`, `?all=1`, and `?maxBatches=` rules as the hadith bulk endpoint (shared engine in `internal/opencode/translate-bulk.handler.go`)
+- `?type=` selects which tables to translate: `kitab`, `bab`, or `both` (default). Invalid `?type=` → `400`
+- Translates **book titles** (`Kitab<kitabName>`):
+  - Rows: `NKitabEng IS NULL OR NKitabEng = ''`, ordered by `VMember ASC`
+  - Input prompt keyed by VMember id: `{"<VMember>": {"arabic": "<NKitabArab>", "indonesia": "<NKitab>"}}`
+  - Writes back via `UPDATE ... SET NKitabEng = ? WHERE VMember = ?`
+- Translates **chapter titles** (`Bab<kitabName>`):
+  - Rows: `NBabEng IS NULL OR NBabEng = ''`, ordered by `VMemberBab ASC`
+  - Input prompt keyed by VMemberBab id: `{"<VMemberBab>": {"arabic": "<NBabArab>", "indonesia": "<NBab>"}}`
+  - Writes back via `UPDATE ... SET NBabEng = ? WHERE VMemberBab = ?`
+- Agent: `opencode run --format json --pure --agent translate-title-bulk` — instructions in `.opencode/agents/translate-title-bulk.md`
+- Reply parsing, failure handling, and sweep semantics are identical to the hadith bulk endpoint; each table is swept independently
+- Response includes aggregate totals plus a per-table breakdown (so `failed` ids cannot be misattributed):
+```json
+{
+  "processed": n, "updated": m, "failed": [...],
+  "kitab": {"processed": a, "updated": b, "failed": [...]},
+  "bab":   {"processed": c, "updated": d, "failed": [...]}
+}
+```
+- A skipped table (e.g. `?type=kitab`) reports a zeroed sub-object; `failed` entries use `{"nomer": <id>, "error": "..."}` where `nomer` is the VMember/VMemberBab value
 
 ### AI Ask Endpoint (context + timeout)
 - `POST /ai/ask` (JWT-protected)

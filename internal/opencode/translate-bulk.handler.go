@@ -15,7 +15,8 @@ import (
 )
 
 const (
-	bulkTranslateAgent = "translate-bulk"
+	bulkTranslateAgent      = "translate-bulk"
+	bulkTitleTranslateAgent = "translate-title-bulk"
 )
 
 type bulkHadithInput struct {
@@ -23,10 +24,30 @@ type bulkHadithInput struct {
 	Indonesia string `json:"indonesia"`
 }
 
+// bulkTranslateConfig describes a bulk translation target table: the columns to
+// SELECT (a comma-separated list, aliased to Nomer/Arabic/Indonesia so it scans
+// into translationRow), the row id column, the column the English result is
+// written back to, and the opencode agent to invoke. Both the hadith bulk
+// endpoint and the Kitab/Bab title bulk endpoint share this engine.
+type bulkTranslateConfig struct {
+	Table         string
+	IDColumn      string
+	EnglishColumn string
+	Agent         string
+	SelectClause  string
+}
+
 // bulkBatchResult holds the outcome of one AI batch.
 type bulkBatchResult struct {
 	updated int
 	failed  []translateResult
+}
+
+// bulkSweepResult holds the aggregated outcome of a full sweep over one table.
+type bulkSweepResult struct {
+	Processed int               `json:"processed"`
+	Updated   int               `json:"updated"`
+	Failed    []translateResult `json:"failed"`
 }
 
 // buildBulkTranslatePrompt marshals the rows into the JSON payload fed to the
@@ -84,9 +105,9 @@ func parseBulkTranslationReply(reply string) (map[string]string, error) {
 }
 
 // processBulkBatch translates one batch of rows in a single AI call: builds the
-// keyed JSON payload, sends it to the translate-bulk agent, parses the JSON
-// reply, and writes the English translations back to the database.
-func processBulkBatch(ctx context.Context, kitabName string, rows []translationRow, model *openCodeModel) bulkBatchResult {
+// keyed JSON payload, sends it to the configured bulk agent, parses the JSON
+// reply, and writes the English translations back to the target table.
+func processBulkBatch(ctx context.Context, cfg *bulkTranslateConfig, rows []translationRow, model *openCodeModel) bulkBatchResult {
 	allFailed := func(errMsg string) []translateResult {
 		failed := make([]translateResult, 0, len(rows))
 		for _, row := range rows {
@@ -105,7 +126,7 @@ func processBulkBatch(ctx context.Context, kitabName string, rows []translationR
 		return bulkBatchResult{failed: allFailed(err.Error())}
 	}
 
-	reply, err := translateWithRetryAgent(ctx, prompt, bulkTranslateAgent, model)
+	reply, err := translateWithRetryAgent(ctx, prompt, cfg.Agent, model)
 	if err != nil {
 		log.Println("translate bulk opencode error:", err)
 		return bulkBatchResult{failed: allFailed(err.Error())}
@@ -137,9 +158,9 @@ func processBulkBatch(ctx context.Context, kitabName string, rows []translationR
 			continue
 		}
 
-		if err := database.DB.Table(kitabName).
-			Where("Nomer = ?", row.Nomer).
-			Update("English", val).Error; err != nil {
+		if err := database.DB.Table(cfg.Table).
+			Where(cfg.IDColumn+" = ?", row.Nomer).
+			Update(cfg.EnglishColumn, val).Error; err != nil {
 			log.Println("translate bulk update error:", err)
 			result.failed = append(result.failed, translateResult{Nomer: row.Nomer, Error: err.Error()})
 			continue
@@ -157,6 +178,132 @@ func processBulkBatch(ctx context.Context, kitabName string, rows []translationR
 	return result
 }
 
+// runBulkTranslate sweeps cfg.Table in batches of limit untranslated rows. By
+// default a single batch is processed; with sweepAll it keeps draining until no
+// untranslated rows remain (batches advance by IDColumn ASC, never resending an
+// already-attempted id). maxBatches caps the number of batches (0 = unbounded).
+func runBulkTranslate(ctx context.Context, cfg *bulkTranslateConfig, limit int, sweepAll bool, maxBatches int, model *openCodeModel) (bulkSweepResult, error) {
+	result := bulkSweepResult{}
+	attempted := make(map[uint]bool)
+	batches := 0
+
+	for {
+		if maxBatches > 0 && batches >= maxBatches {
+			break
+		}
+
+		var rows []translationRow
+		q := database.DB.Table(cfg.Table).
+			Select(cfg.SelectClause).
+			Where(cfg.EnglishColumn + " IS NULL OR " + cfg.EnglishColumn + " = ''")
+		if len(attempted) > 0 {
+			keys := make([]uint, 0, len(attempted))
+			for k := range attempted {
+				keys = append(keys, k)
+			}
+			q = q.Where(cfg.IDColumn+" NOT IN ?", keys)
+		}
+		if err := q.Order(cfg.IDColumn + " ASC").Limit(limit).Find(&rows).Error; err != nil {
+			return bulkSweepResult{}, err
+		}
+
+		if len(rows) == 0 {
+			break
+		}
+
+		for _, row := range rows {
+			attempted[row.Nomer] = true
+		}
+
+		batch := processBulkBatch(ctx, cfg, rows, model)
+		result.Processed += len(rows)
+		result.Updated += batch.updated
+		result.Failed = append(result.Failed, batch.failed...)
+		batches++
+
+		if !sweepAll {
+			break
+		}
+	}
+
+	return result, nil
+}
+
+// parseBulkQueryParams parses the limit/all/maxBatches query parameters shared
+// by the bulk translate endpoints. On invalid input it writes the 400 response
+// and returns ok=false.
+func parseBulkQueryParams(c *fiber.Ctx) (limit int, sweepAll bool, maxBatches int, ok bool) {
+	limit = defaultTranslateLimit
+	if raw := c.Query("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 {
+			_ = c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"status":  "error",
+				"message": "limit must be a positive integer",
+				"data":    nil,
+			})
+			return 0, false, 0, false
+		}
+		limit = parsed
+	}
+
+	sweepAll = false
+	if raw := c.Query("all"); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			_ = c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"status":  "error",
+				"message": "all must be a boolean",
+				"data":    nil,
+			})
+			return 0, false, 0, false
+		}
+		sweepAll = parsed
+	}
+
+	maxBatches = 0
+	if raw := c.Query("maxBatches"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 {
+			_ = c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"status":  "error",
+				"message": "maxBatches must be a positive integer",
+				"data":    nil,
+			})
+			return 0, false, 0, false
+		}
+		maxBatches = parsed
+	}
+
+	return limit, sweepAll, maxBatches, true
+}
+
+// buildTranslateModel returns the opencode model from env when both provider
+// and model id are set, or nil otherwise.
+func buildTranslateModel() *openCodeModel {
+	providerID := os.Getenv("OPENCODE_PROVIDER_ID")
+	modelID := os.Getenv("OPENCODE_MODEL_ID")
+	if providerID == "" || modelID == "" {
+		return nil
+	}
+	return &openCodeModel{
+		ProviderID: providerID,
+		ModelID:    modelID,
+	}
+}
+
+// hadithBulkConfig configures the bulk engine for a hadith table
+// (Nomer/Arabic/Indonesia -> English).
+func hadithBulkConfig(kitabName string) *bulkTranslateConfig {
+	return &bulkTranslateConfig{
+		Table:         kitabName,
+		IDColumn:      "Nomer",
+		EnglishColumn: "English",
+		Agent:         bulkTranslateAgent,
+		SelectClause:  "Nomer, Arabic, Indonesia",
+	}
+}
+
 // TranslateHadithsBulk translates several hadiths in a single AI call by
 // default. With ?all=1 it sweeps the whole table in batches of ?limit= rows
 // until no untranslated rows remain. ?maxBatches= caps the number of batches.
@@ -170,110 +317,28 @@ func TranslateHadithsBulk(c *fiber.Ctx) error {
 		return nil
 	}
 
-	limit := defaultTranslateLimit
-	if raw := c.Query("limit"); raw != "" {
-		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed < 1 {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"status":  "error",
-				"message": "limit must be a positive integer",
-				"data":    nil,
-			})
-		}
-		limit = parsed
-	}
-
-	sweepAll := false
-	if raw := c.Query("all"); raw != "" {
-		parsed, err := strconv.ParseBool(raw)
-		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"status":  "error",
-				"message": "all must be a boolean",
-				"data":    nil,
-			})
-		}
-		sweepAll = parsed
-	}
-
-	maxBatches := 0
-	if raw := c.Query("maxBatches"); raw != "" {
-		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed < 1 {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"status":  "error",
-				"message": "maxBatches must be a positive integer",
-				"data":    nil,
-			})
-		}
-		maxBatches = parsed
+	limit, sweepAll, maxBatches, valid := parseBulkQueryParams(c)
+	if !valid {
+		return nil
 	}
 
 	loadTranslateConfig()
 
-	providerID := os.Getenv("OPENCODE_PROVIDER_ID")
-	modelID := os.Getenv("OPENCODE_MODEL_ID")
-	var model *openCodeModel
-	if providerID != "" && modelID != "" {
-		model = &openCodeModel{
-			ProviderID: providerID,
-			ModelID:    modelID,
-		}
-	}
+	model := buildTranslateModel()
 
-	attempted := make(map[uint]bool)
-	totalProcessed := 0
-	totalUpdated := 0
-	totalFailed := make([]translateResult, 0)
-	batches := 0
-
-	for {
-		if maxBatches > 0 && batches >= maxBatches {
-			break
-		}
-
-		var rows []translationRow
-		q := database.DB.Table(kitabName).
-			Select("Nomer", "Arabic", "Indonesia").
-			Where("English IS NULL OR English = ''")
-		if len(attempted) > 0 {
-			keys := make([]uint, 0, len(attempted))
-			for k := range attempted {
-				keys = append(keys, k)
-			}
-			q = q.Where("Nomer NOT IN ?", keys)
-		}
-		if err := q.Order("Nomer ASC").Limit(limit).Find(&rows).Error; err != nil {
-			log.Println("translate bulk query error:", err)
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"status":  "error",
-				"message": "failed to query hadith records",
-				"data":    nil,
-			})
-		}
-
-		if len(rows) == 0 {
-			break
-		}
-
-		for _, row := range rows {
-			attempted[row.Nomer] = true
-		}
-
-		result := processBulkBatch(c.Context(), kitabName, rows, model)
-		totalProcessed += len(rows)
-		totalUpdated += result.updated
-		totalFailed = append(totalFailed, result.failed...)
-		batches++
-
-		if !sweepAll {
-			break
-		}
+	result, err := runBulkTranslate(c.Context(), hadithBulkConfig(kitabName), limit, sweepAll, maxBatches, model)
+	if err != nil {
+		log.Println("translate bulk query error:", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"status":  "error",
+			"message": "failed to query hadith records",
+			"data":    nil,
+		})
 	}
 
 	return c.JSON(fiber.Map{
-		"processed": totalProcessed,
-		"updated":   totalUpdated,
-		"failed":    totalFailed,
+		"processed": result.Processed,
+		"updated":   result.Updated,
+		"failed":    result.Failed,
 	})
 }
