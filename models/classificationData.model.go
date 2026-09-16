@@ -95,6 +95,7 @@ func (me *ClassificationData) getMinimalKitab(kitab []string, dataType string, c
 	var kitabTitle KitabTitle
 	err := database.DB.Select(
 		"NKitab",
+		"NKitabEng",
 		"VMember",
 		"Awalan",
 	).Table("Kitab"+kitab[0]).Where(
@@ -112,6 +113,7 @@ func (me *ClassificationData) getMinimalBab(kitab []string, dataType string, c c
 	var babTitle BabTitle
 	err := database.DB.Select(
 		"NBab",
+		"NBabEng",
 		"VMemberBab",
 		"AwalanBab",
 	).Table("Bab"+kitab[0]).Where(

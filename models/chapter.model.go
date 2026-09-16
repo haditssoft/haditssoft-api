@@ -9,6 +9,9 @@ import (
 // ini adalah data dropdown kitab
 type Chapter struct {
 	NBab       string `json:"NBab"`
+	NBabEng    string `json:"NBabEng"`
+	NBabUrd    string `json:"NBabUrd"`
+	NBabBen    string `json:"NBabBen"`
 	VMemberBab string `json:"VMemberBab"`
 	AwalanBab  string `json:"AwalanBab"`
 }
@@ -23,6 +26,7 @@ func GetAllChapters(kitabName, start, end string) (*[]Chapter, error) {
 
 	if err := database.DB.Select(
 		"NBab",
+		"NBabEng",
 		"VMemberBab",
 		"AwalanBab",
 	).Table(

@@ -99,6 +99,7 @@ func (me *CustomData) getMinimalKitab(kitab []string, dataType string, c chan er
 	var kitabTitle KitabTitle
 	err := database.DB.Select(
 		"NKitab",
+		"NKitabEng",
 		"VMember",
 		"Awalan",
 	).Table("Kitab"+kitab[0]).Where(
@@ -122,6 +123,7 @@ func (me *CustomData) getMinimalBab(kitab []string, dataType string, c chan erro
 	var babTitle BabTitle
 	err := database.DB.Select(
 		"NBab",
+		"NBabEng",
 		"VMemberBab",
 		"AwalanBab",
 	).Table("Bab"+kitab[0]).Where(

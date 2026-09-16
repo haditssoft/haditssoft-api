@@ -267,6 +267,7 @@ func getMinimalKitab(kitab []string, row *MainData, dataType string, c chan erro
 		err := database.DB.
 			Select(
 				"NKitab",
+				"NKitabEng",
 				"VMember",
 				"Awalan",
 			).
@@ -293,6 +294,7 @@ func getMinimalBab(kitab []string, row *MainData, dataType string, c chan error)
 		err := database.DB.
 			Select(
 				"NBab",
+				"NBabEng",
 				"VMemberBab",
 				"AwalanBab",
 			).

@@ -7,9 +7,12 @@ import (
 // contoh table KitabShahihMuslim
 // ini adalah data dropdown kitab
 type Book struct {
-	NKitab  string `json:"NKitab"`
-	VMember string `json:"VMember"`
-	Awalan  string `json:"Awalan"`
+	NKitab    string `json:"NKitab"`
+	NKitabEng string `json:"NKitabEng"`
+	NKitabUrd string `json:"NKitabUrd"`
+	NKitabBen string `json:"NKitabBen"`
+	VMember   string `json:"VMember"`
+	Awalan    string `json:"Awalan"`
 }
 
 func GetAllBooks(kitabName string) (*[]Book, error) {
@@ -18,6 +21,7 @@ func GetAllBooks(kitabName string) (*[]Book, error) {
 
 	if err := database.DB.Select(
 		"NKitab",
+		"NKitabEng",
 		"VMember",
 		"Awalan",
 	).Table(

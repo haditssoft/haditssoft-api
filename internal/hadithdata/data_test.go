@@ -36,9 +36,10 @@ func createHDRKitabSchema(t *testing.T) {
 	t.Helper()
 	statements := []string{
 		`CREATE TABLE "ShahihBukhari" (Nomer INTEGER PRIMARY KEY, Arabic TEXT, Indonesia TEXT, English TEXT, Urdu TEXT, Bengali TEXT, Albani TEXT, Darussalam TEXT, VSelectedK INTEGER, VSelectedB INTEGER)`,
-		`CREATE TABLE "KitabShahihBukhari" (NKitab TEXT, VMember INTEGER, Awalan TEXT)`,
-		`CREATE TABLE "BabShahihBukhari" (NBab TEXT, VMemberBab INTEGER, AwalanBab TEXT)`,
+		`CREATE TABLE "KitabShahihBukhari" (NKitab TEXT, NKitabEng TEXT, VMember INTEGER, Awalan TEXT)`,
+		`CREATE TABLE "BabShahihBukhari" (NBab TEXT, NBabEng TEXT, VMemberBab INTEGER, AwalanBab TEXT)`,
 		`CREATE TABLE "NoLainShahihBukhari" (No INTEGER, NoLain1 TEXT, NoLain2 TEXT, NoLain3 TEXT, NoLain4 TEXT, NoLain5 TEXT, NoLain6 TEXT, NoLain7 TEXT, NoLain8 TEXT, NoLain9 TEXT)`,
+		`CREATE TABLE "RawiShahihBukhari" (NoHdt INTEGER, KodeRawi INTEGER)`,
 		`CREATE TABLE "Tema" (NoHdt INTEGER, No INTEGER)`,
 	}
 	for _, s := range statements {
@@ -61,14 +62,17 @@ func seedHDRFullRow(t *testing.T) {
 			t.Fatalf("failed to seed hadith: %v", err)
 		}
 	}
-	if err := database.DB.Exec(`INSERT INTO "KitabShahihBukhari" (NKitab, VMember, Awalan) VALUES ('Kitab Iman', 5, '1')`).Error; err != nil {
+	if err := database.DB.Exec(`INSERT INTO "KitabShahihBukhari" (NKitab, NKitabEng, VMember, Awalan) VALUES ('Kitab Iman', 'Book of Faith', 5, '1')`).Error; err != nil {
 		t.Fatalf("failed to seed kitab: %v", err)
 	}
-	if err := database.DB.Exec(`INSERT INTO "BabShahihBukhari" (NBab, VMemberBab, AwalanBab) VALUES ('Bab Pertama', 10, '1')`).Error; err != nil {
+	if err := database.DB.Exec(`INSERT INTO "BabShahihBukhari" (NBab, NBabEng, VMemberBab, AwalanBab) VALUES ('Bab Pertama', 'First Chapter', 10, '1')`).Error; err != nil {
 		t.Fatalf("failed to seed bab: %v", err)
 	}
 	if err := database.DB.Exec(`INSERT INTO "NoLainShahihBukhari" (No, NoLain1, NoLain2) VALUES (1, '7561', '243')`).Error; err != nil {
 		t.Fatalf("failed to seed no lain: %v", err)
+	}
+	if err := database.DB.Exec(`INSERT INTO "RawiShahihBukhari" (NoHdt, KodeRawi) VALUES (1, 100)`).Error; err != nil {
+		t.Fatalf("failed to seed rawi: %v", err)
 	}
 	if err := database.DB.Exec(`INSERT INTO "Tema" (NoHdt, No) VALUES (1, 1)`).Error; err != nil {
 		t.Fatalf("failed to seed tema: %v", err)
