@@ -231,3 +231,23 @@ Two search strategies available, frontend chooses which to call:
 - The subprocess is bound to the HTTP request context via `exec.CommandContext`, so when the client disconnects, the `opencode` subprocess is killed immediately (no zombie processes)
 - A hard timeout is enforced with `context.WithTimeout`: default **90s** (`defaultAskTimeoutSec` in `internal/opencode/handler.go`), configurable via `OPENCODE_ASK_TIMEOUT_SEC` env var (must be ≥ 1; invalid/zero values fall back to the default)
 - On timeout, the handler returns `502 Bad Gateway` with `{"error": "failed to get AI response"}` (the exec error is logged but not exposed)
+
+## Test Coverage (mandatory)
+
+Every change to application code must ship with tests. Run the full suite before finishing: `go test ./...` — all tests must pass.
+
+Coverage expectations:
+
+- Every non-trivial change to handlers, services, repositories, models, routes, or shared logic ships with tests covering the happy path, validation failures, auth/guard failures, and every error branch (exec/DB/parse/not-found).
+- Pure logic (parsers, flag builders, search helpers, validators) uses table-driven tests (`tests := []struct{...}` + `t.Run(name, ...)`), including edge cases: empty input, malformed input, duplicates, whitespace/trimming, boundary indices.
+- HTTP endpoints are tested at the route level via `app.Test(...)`: success, 4xx/5xx failures, wrong HTTP method, missing/invalid body, no/invalid/expired token, deleted/inactive resource. Assert the status code, response body shape (e.g. `status`/`message`/`errors`/`error` keys), and DB side effects (e.g. refresh-token rotation + `is_used`, blacklist count, activity log rows).
+
+Rules:
+
+- Test files live beside the code in the **same package** (white-box, `package <pkg>`), named `<subject>_test.go`; group shared helpers in one `_test.go` per package (e.g. `handler_test.go`).
+- Per package, define: `setup<X>TestDB(t)` (in-memory SQLite via `github.com/glebarez/sqlite`, `NamingStrategy{SingularTable: true, NoLowerCase: true}`, unique DB name per test via a package-level counter, assign to `database.DB`, restore/close in `t.Cleanup`), `setup<X>TestApp(t)` (`fiber.New()` + `RegisterRoutes(...)`), a `make<X>Request(t, app, method, path, body, token)` helper returning `*http.Response`, and a `decode<X>JSON(t, resp, dest)` helper.
+- Set prerequisite env (e.g. `JWT_SECRET`) and call `validator.RegisterCustomValidations()` inside `TestMain(m *testing.M)` when the package needs them; other env vars are set per test and unset via `t.Cleanup`.
+- Mock external/OS boundaries by overriding a package-level var (e.g. `execCommandFunc`) in the test and restoring the original in `t.Cleanup`; never call the real `opencode` CLI, network, or production DB from tests.
+- Use only the standard `testing` package for assertions (no testify/gomega). Use `t.Helper()` on all helpers, `t.Run` for subtests, and error messages in the form `status = %d, want %d` / `got %q, want %q`.
+- Test names follow `Test<Subject>_<Outcome>` (e.g. `TestLogin_Success`, `TestRefresh_ReuseDetection`, `TestRoute_AskNoAuth`, `TestParseOpenCodeNDJSON`); group endpoint tests with `// ===...===` banner comments.
+- Keep tests deterministic, independent, and runnable in parallel-by-default mode: the only shared mutable global allowed is `database.DB`, and it is swapped/restored per test via `t.Cleanup`.
