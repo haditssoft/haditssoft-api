@@ -889,6 +889,14 @@ func TestIsPermanentServerError(t *testing.T) {
 		{"rate limit - not permanent", "opencode server error: Rate limit exceeded", false},
 		{"endpoint unavailable - not permanent", "opencode server error: Endpoint is unavailable", false},
 		{"generic server error - not permanent", "opencode server error: Unexpected server error", false},
+		{"ai invalid API key", "AI server error: HTTP 401: Invalid API key", true},
+		{"ai unauthorized", "AI server error: HTTP 401: unauthorized", true},
+		{"ai invalid_api_key", "AI server error: HTTP 401: invalid_api_key", true},
+		{"ai authentication", "AI server error: HTTP 403: authentication required", true},
+		{"ai permission denied", "AI server error: HTTP 403: permission denied", true},
+		{"ai model not found", "AI server error: HTTP 404: Model not found", true},
+		{"ai rate limit - not permanent", "AI server error: HTTP 429: rate limit exceeded", false},
+		{"ai server unavailable - not permanent", "AI server error: HTTP 503: unavailable", false},
 		{"empty", "", false},
 	}
 
@@ -916,6 +924,11 @@ func TestIsRetryableServerError(t *testing.T) {
 		{"model not found - permanent", fmt.Errorf("opencode server error: Model not found: xyz"), false},
 		{"unauthorized - permanent", fmt.Errorf("opencode server error: Unauthorized"), false},
 		{"auth failure - permanent", fmt.Errorf("opencode server error: Invalid API key"), false},
+		{"ai rate limit - retryable", fmt.Errorf("AI server error: HTTP 429: rate limit exceeded"), true},
+		{"ai server unavailable - retryable", fmt.Errorf("AI server error: HTTP 503: unavailable"), true},
+		{"ai generic - retryable", fmt.Errorf("AI server error: HTTP 500: Unexpected error"), true},
+		{"ai invalid key - permanent", fmt.Errorf("AI server error: HTTP 401: Invalid API key"), false},
+		{"ai unauthorized - permanent", fmt.Errorf("AI server error: HTTP 403: permission denied"), false},
 	}
 
 	for _, tt := range tests {

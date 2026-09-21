@@ -52,14 +52,15 @@ var permanentServerErrorPatterns = []string{
 	"permission denied",
 }
 
-// isRetryableServerError returns true if the error is an opencode server error
-// that may succeed on retry (transient failures like rate limits, endpoint down).
+// isRetryableServerError returns true if the error is a provider server error
+// (opencode CLI or OpenAI-compatible HTTP API) that may succeed on retry
+// (transient failures like rate limits, endpoint down).
 func isRetryableServerError(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := err.Error()
-	if !strings.HasPrefix(msg, "opencode server error:") {
+	if !strings.HasPrefix(msg, "opencode server error:") && !strings.HasPrefix(msg, openAIServerErrorPrefix) {
 		return false
 	}
 	return !isPermanentServerError(msg)
@@ -235,7 +236,7 @@ func translateWithRetry(ctx context.Context, prompt string, model *openCodeModel
 func translateWithRetryAgent(ctx context.Context, prompt, agent string, model *openCodeModel) (string, error) {
 	var lastErr error
 	for attempt := 1; attempt <= translateMaxRetries; attempt++ {
-		reply, err := runOpenCodeCommand(ctx, prompt, agent, model)
+		reply, err := runAIProvider(ctx, prompt, agent, model)
 		if err == nil {
 			if attempt > 1 {
 				log.Printf("translate succeeded on attempt %d/%d\n", attempt, translateMaxRetries)

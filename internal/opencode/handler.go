@@ -177,7 +177,7 @@ func AskOpenCode(c *fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(c.Context(), time.Duration(timeoutSec)*time.Second)
 	defer cancel()
 
-	reply, err := runOpenCodeCommand(ctx, modelValidation.Prompt, agent, model)
+	reply, err := runAIProvider(ctx, modelValidation.Prompt, agent, model)
 	if err != nil {
 		log.Println("opencode run error:", err)
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{
