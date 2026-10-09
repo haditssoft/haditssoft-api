@@ -226,6 +226,26 @@ Two search strategies available, frontend chooses which to call:
 ```
 - A skipped table (e.g. `?type=kitab`) reports a zeroed sub-object; `failed` entries use `{"nomer": <id>, "error": "..."}` where `nomer` is the VMember/VMemberBab value
 
+### Bulk Translate Endpoint (improve Indonesian, saved to Bangla column)
+Applications: re-translate the existing Indonesian from the Arabic (Arabic authoritative, old Indonesian as reference to correct/improve). The results are saved to the **Bangla column** so the frontend Bangla switch shows them and the old Indonesian stays untouched for comparison.
+
+**Hadiths:**
+- `POST /ai/cron/translate/bulk/id/:kitabName?key=<OPENCODE_CRON_KEY>&limit=10`
+- Same cron-key guard (`?key=`), kitab whitelist, `?limit=`, `?all=1`, and `?maxBatches=` rules as `POST /ai/cron/translate/bulk/:kitabName` (shared engine in `internal/opencode/translate-bulk.handler.go`)
+- Selects rows where `Bengali IS NULL OR Bengali = ''`, ordered by `Nomer`
+- Input prompt: `{"<Nomer>": {"arabic": "<Arabic>", "indonesia": "<Indonesia>"}}`
+- Agent: `opencode run --format json --pure --agent translate-bulk-id` — instructions in `.opencode/agents/translate-bulk-id.md`
+- Reply must be a JSON object keyed by Nomer: `{"<Nomer>": "<improved_indonesian>"}`
+- Writes back via `UPDATE ... SET Bengali = ? WHERE Nomer = ?` — never touches `English` or `Indonesia`
+
+**Kitab/Bab titles:**
+- `POST /ai/cron/translate/title/bulk/id/:kitabName?key=<OPENCODE_CRON_KEY>&limit=10&type=both`
+- Same guard/filter/`?type=`/sweep rules as `POST /ai/cron/translate/title/bulk/:kitabName`
+- Kitab rows: `NKitabBen IS NULL OR NKitabBen = ''`, prompt keyed by `VMember` (`NKitabArab`/`NKitab`), writes `UPDATE ... SET NKitabBen = ? WHERE VMember = ?`
+- Bab rows: `NBabBen IS NULL OR NBabBen = ''`, prompt keyed by `VMemberBab` (`NBabArab`/`NBab`), writes `UPDATE ... SET NBabBen = ? WHERE VMemberBab = ?`
+- Agent: `opencode run --format json --pure --agent translate-title-bulk-id` — instructions in `.opencode/agents/translate-title-bulk-id.md`
+- Reply parsing/failure/sweep semantics and response shape (with `kitab`/`bab` breakdown) identical to the English title bulk endpoint
+
 ### AI Ask Endpoint (context + timeout)
 - `POST /ai/ask` (JWT-protected)
 - The subprocess is bound to the HTTP request context via `exec.CommandContext`, so when the client disconnects, the `opencode` subprocess is killed immediately (no zombie processes)

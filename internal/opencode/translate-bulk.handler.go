@@ -15,8 +15,10 @@ import (
 )
 
 const (
-	bulkTranslateAgent      = "translate-bulk"
-	bulkTitleTranslateAgent = "translate-title-bulk"
+	bulkTranslateAgent        = "translate-bulk"
+	bulkTitleTranslateAgent   = "translate-title-bulk"
+	bulkTranslateIDAgent      = "translate-bulk-id"
+	bulkTitleTranslateIDAgent = "translate-title-bulk-id"
 )
 
 type bulkHadithInput struct {
@@ -26,15 +28,18 @@ type bulkHadithInput struct {
 
 // bulkTranslateConfig describes a bulk translation target table: the columns to
 // SELECT (a comma-separated list, aliased to Nomer/Arabic/Indonesia so it scans
-// into translationRow), the row id column, the column the English result is
+// into translationRow), the row id column, the column the translation result is
 // written back to, and the opencode agent to invoke. Both the hadith bulk
-// endpoint and the Kitab/Bab title bulk endpoint share this engine.
+// endpoint and the Kitab/Bab title bulk endpoint share this engine. The target
+// column is the "TargetColumn" (e.g. English or, for the Indonesian variant,
+// the Bangla column Bengali/NKitabBen/NBabBen) used both as the sweep filter
+// and the write-back destination.
 type bulkTranslateConfig struct {
-	Table         string
-	IDColumn      string
-	EnglishColumn string
-	Agent         string
-	SelectClause  string
+	Table        string
+	IDColumn     string
+	TargetColumn string
+	Agent        string
+	SelectClause string
 }
 
 // bulkBatchResult holds the outcome of one AI batch.
@@ -51,8 +56,9 @@ type bulkSweepResult struct {
 }
 
 // buildBulkTranslatePrompt marshals the rows into the JSON payload fed to the
-// translate-bulk agent. Each key is the hadith number (Nomer column) and each
-// value holds the Arabic text plus the Indonesian reference translation.
+// bulk agent. Each key is the hadith number (Nomer column) and each value holds
+// the Arabic text plus the Indonesian reference translation (which the
+// Indonesian variant re-translates into improved Indonesian).
 func buildBulkTranslatePrompt(rows []translationRow) (string, error) {
 	payload := make(map[string]bulkHadithInput, len(rows))
 	for _, row := range rows {
@@ -106,7 +112,7 @@ func parseBulkTranslationReply(reply string) (map[string]string, error) {
 
 // processBulkBatch translates one batch of rows in a single AI call: builds the
 // keyed JSON payload, sends it to the configured bulk agent, parses the JSON
-// reply, and writes the English translations back to the target table.
+// reply, and writes the translations back to the target table.
 func processBulkBatch(ctx context.Context, cfg *bulkTranslateConfig, rows []translationRow, model *openCodeModel) bulkBatchResult {
 	allFailed := func(errMsg string) []translateResult {
 		failed := make([]translateResult, 0, len(rows))
@@ -160,7 +166,7 @@ func processBulkBatch(ctx context.Context, cfg *bulkTranslateConfig, rows []tran
 
 		if err := database.DB.Table(cfg.Table).
 			Where(cfg.IDColumn+" = ?", row.Nomer).
-			Update(cfg.EnglishColumn, val).Error; err != nil {
+			Update(cfg.TargetColumn, val).Error; err != nil {
 			log.Println("translate bulk update error:", err)
 			result.failed = append(result.failed, translateResult{Nomer: row.Nomer, Error: err.Error()})
 			continue
@@ -195,7 +201,7 @@ func runBulkTranslate(ctx context.Context, cfg *bulkTranslateConfig, limit int, 
 		var rows []translationRow
 		q := database.DB.Table(cfg.Table).
 			Select(cfg.SelectClause).
-			Where(cfg.EnglishColumn + " IS NULL OR " + cfg.EnglishColumn + " = ''")
+			Where(cfg.TargetColumn + " IS NULL OR " + cfg.TargetColumn + " = ''")
 		if len(attempted) > 0 {
 			keys := make([]uint, 0, len(attempted))
 			for k := range attempted {
@@ -293,21 +299,37 @@ func buildTranslateModel() *openCodeModel {
 }
 
 // hadithBulkConfig configures the bulk engine for a hadith table
-// (Nomer/Arabic/Indonesia -> English).
+// (Nomer/Arabic/Indonesia -> the English column).
 func hadithBulkConfig(kitabName string) *bulkTranslateConfig {
 	return &bulkTranslateConfig{
-		Table:         kitabName,
-		IDColumn:      "Nomer",
-		EnglishColumn: "English",
-		Agent:         bulkTranslateAgent,
-		SelectClause:  "Nomer, Arabic, Indonesia",
+		Table:        kitabName,
+		IDColumn:     "Nomer",
+		TargetColumn: "English",
+		Agent:        bulkTranslateAgent,
+		SelectClause: "Nomer, Arabic, Indonesia",
 	}
 }
 
-// TranslateHadithsBulk translates several hadiths in a single AI call by
-// default. With ?all=1 it sweeps the whole table in batches of ?limit= rows
-// until no untranslated rows remain. ?maxBatches= caps the number of batches.
-func TranslateHadithsBulk(c *fiber.Ctx) error {
+// hadithBulkIDConfig configures the bulk engine for a hadith table for the
+// Indonesian variant: the Arabic is authoritative and the existing Indonesian
+// is the reference to re-translate. The improved Indonesian result is written
+// to the Bengali (Bangla) column for now, so the frontend Bangla language
+// switch shows it while real Urdu/Bangla translations are not ready.
+func hadithBulkIDConfig(kitabName string) *bulkTranslateConfig {
+	return &bulkTranslateConfig{
+		Table:        kitabName,
+		IDColumn:     "Nomer",
+		TargetColumn: "Bengali",
+		Agent:        bulkTranslateIDAgent,
+		SelectClause: "Nomer, Arabic, Indonesia",
+	}
+}
+
+// translateHadithsBulk runs the shared bulk engine for the hadith table of a
+// kitab using the given config builder. With ?all=1 it sweeps the whole table
+// in batches of ?limit= rows until no rows with an empty target column remain.
+// ?maxBatches= caps the number of batches.
+func translateHadithsBulk(c *fiber.Ctx, buildConfig func(string) *bulkTranslateConfig) error {
 	if !authorizeCronKey(c) {
 		return nil
 	}
@@ -326,7 +348,7 @@ func TranslateHadithsBulk(c *fiber.Ctx) error {
 
 	model := buildTranslateModel()
 
-	result, err := runBulkTranslate(c.Context(), hadithBulkConfig(kitabName), limit, sweepAll, maxBatches, model)
+	result, err := runBulkTranslate(c.Context(), buildConfig(kitabName), limit, sweepAll, maxBatches, model)
 	if err != nil {
 		log.Println("translate bulk query error:", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -341,4 +363,20 @@ func TranslateHadithsBulk(c *fiber.Ctx) error {
 		"updated":   result.Updated,
 		"failed":    result.Failed,
 	})
+}
+
+// TranslateHadithsBulk translates several hadiths into English in a single AI
+// call by default. With ?all=1 it sweeps the whole table in batches of ?limit=
+// rows until no untranslated rows remain. ?maxBatches= caps the number of
+// batches.
+func TranslateHadithsBulk(c *fiber.Ctx) error {
+	return translateHadithsBulk(c, hadithBulkConfig)
+}
+
+// TranslateHadithsBulkID translates several hadiths into improved Indonesian in
+// a single AI call by default, re-translating the existing Indonesian reference
+// from the Arabic. The result is written to the Bengali (Bangla) column. It
+// honors the same ?all=1/?limit=/?maxBatches= rules as TranslateHadithsBulk.
+func TranslateHadithsBulkID(c *fiber.Ctx) error {
+	return translateHadithsBulk(c, hadithBulkIDConfig)
 }

@@ -22,12 +22,12 @@ type titleBulkTranslateResponse struct {
 
 func seedKitabShahihBukhari(t *testing.T, rows []map[string]interface{}) {
 	t.Helper()
-	if err := database.DB.Exec(`CREATE TABLE IF NOT EXISTS "KitabShahihBukhari" ("VMember" INTEGER PRIMARY KEY, "NKitabArab" TEXT, "NKitab" TEXT, "NKitabEng" TEXT)`).Error; err != nil {
+	if err := database.DB.Exec(`CREATE TABLE IF NOT EXISTS "KitabShahihBukhari" ("VMember" INTEGER PRIMARY KEY, "NKitabArab" TEXT, "NKitab" TEXT, "NKitabEng" TEXT, "NKitabBen" TEXT)`).Error; err != nil {
 		t.Fatalf("failed to create kitab title table: %v", err)
 	}
 	for _, row := range rows {
-		if err := database.DB.Exec(`INSERT INTO "KitabShahihBukhari" ("VMember", "NKitabArab", "NKitab", "NKitabEng") VALUES (?, ?, ?, ?)`,
-			row["VMember"], row["NKitabArab"], row["NKitab"], row["NKitabEng"]).Error; err != nil {
+		if err := database.DB.Exec(`INSERT INTO "KitabShahihBukhari" ("VMember", "NKitabArab", "NKitab", "NKitabEng", "NKitabBen") VALUES (?, ?, ?, ?, ?)`,
+			row["VMember"], row["NKitabArab"], row["NKitab"], row["NKitabEng"], row["NKitabBen"]).Error; err != nil {
 			t.Fatalf("failed to seed kitab title row %v: %v", row, err)
 		}
 	}
@@ -35,12 +35,12 @@ func seedKitabShahihBukhari(t *testing.T, rows []map[string]interface{}) {
 
 func seedBabShahihBukhari(t *testing.T, rows []map[string]interface{}) {
 	t.Helper()
-	if err := database.DB.Exec(`CREATE TABLE IF NOT EXISTS "BabShahihBukhari" ("VMemberBab" INTEGER PRIMARY KEY, "NBabArab" TEXT, "NBab" TEXT, "NBabEng" TEXT)`).Error; err != nil {
+	if err := database.DB.Exec(`CREATE TABLE IF NOT EXISTS "BabShahihBukhari" ("VMemberBab" INTEGER PRIMARY KEY, "NBabArab" TEXT, "NBab" TEXT, "NBabEng" TEXT, "NBabBen" TEXT)`).Error; err != nil {
 		t.Fatalf("failed to create bab title table: %v", err)
 	}
 	for _, row := range rows {
-		if err := database.DB.Exec(`INSERT INTO "BabShahihBukhari" ("VMemberBab", "NBabArab", "NBab", "NBabEng") VALUES (?, ?, ?, ?)`,
-			row["VMemberBab"], row["NBabArab"], row["NBab"], row["NBabEng"]).Error; err != nil {
+		if err := database.DB.Exec(`INSERT INTO "BabShahihBukhari" ("VMemberBab", "NBabArab", "NBab", "NBabEng", "NBabBen") VALUES (?, ?, ?, ?, ?)`,
+			row["VMemberBab"], row["NBabArab"], row["NBab"], row["NBabEng"], row["NBabBen"]).Error; err != nil {
 			t.Fatalf("failed to seed bab title row %v: %v", row, err)
 		}
 	}
@@ -105,6 +105,114 @@ func assertBabTitleEmpty(t *testing.T, vmemberBab uint) {
 	eng := getBabTitleEng(t, vmemberBab)
 	if eng != nil && *eng != "" {
 		t.Errorf("VMemberBab %d NBabEng = %q, want empty", vmemberBab, *eng)
+	}
+}
+
+func getKitabTitleBen(t *testing.T, vmember uint) *string {
+	t.Helper()
+	var row struct {
+		NKitabBen *string
+	}
+	if err := database.DB.Table("KitabShahihBukhari").Select("NKitabBen").Where("VMember = ?", vmember).First(&row).Error; err != nil {
+		t.Fatalf("failed to read NKitabBen for VMember %d: %v", vmember, err)
+	}
+	return row.NKitabBen
+}
+
+func getBabTitleBen(t *testing.T, vmemberBab uint) *string {
+	t.Helper()
+	var row struct {
+		NBabBen *string
+	}
+	if err := database.DB.Table("BabShahihBukhari").Select("NBabBen").Where("VMemberBab = ?", vmemberBab).First(&row).Error; err != nil {
+		t.Fatalf("failed to read NBabBen for VMemberBab %d: %v", vmemberBab, err)
+	}
+	return row.NBabBen
+}
+
+func assertKitabTitleBen(t *testing.T, vmember uint, want string) {
+	t.Helper()
+	ben := getKitabTitleBen(t, vmember)
+	if ben == nil {
+		t.Errorf("VMember %d NKitabBen = nil, want %q", vmember, want)
+		return
+	}
+	if *ben != want {
+		t.Errorf("VMember %d NKitabBen = %q, want %q", vmember, *ben, want)
+	}
+}
+
+func assertBabTitleBen(t *testing.T, vmemberBab uint, want string) {
+	t.Helper()
+	ben := getBabTitleBen(t, vmemberBab)
+	if ben == nil {
+		t.Errorf("VMemberBab %d NBabBen = nil, want %q", vmemberBab, want)
+		return
+	}
+	if *ben != want {
+		t.Errorf("VMemberBab %d NBabBen = %q, want %q", vmemberBab, *ben, want)
+	}
+}
+
+func assertKitabTitleBenEmpty(t *testing.T, vmember uint) {
+	t.Helper()
+	ben := getKitabTitleBen(t, vmember)
+	if ben != nil && *ben != "" {
+		t.Errorf("VMember %d NKitabBen = %q, want empty", vmember, *ben)
+	}
+}
+
+func assertBabTitleBenEmpty(t *testing.T, vmemberBab uint) {
+	t.Helper()
+	ben := getBabTitleBen(t, vmemberBab)
+	if ben != nil && *ben != "" {
+		t.Errorf("VMemberBab %d NBabBen = %q, want empty", vmemberBab, *ben)
+	}
+}
+
+func getKitabTitleIndonesia(t *testing.T, vmember uint) *string {
+	t.Helper()
+	var row struct {
+		NKitab *string
+	}
+	if err := database.DB.Table("KitabShahihBukhari").Select("NKitab").Where("VMember = ?", vmember).First(&row).Error; err != nil {
+		t.Fatalf("failed to read NKitab for VMember %d: %v", vmember, err)
+	}
+	return row.NKitab
+}
+
+func getBabTitleIndonesia(t *testing.T, vmemberBab uint) *string {
+	t.Helper()
+	var row struct {
+		NBab *string
+	}
+	if err := database.DB.Table("BabShahihBukhari").Select("NBab").Where("VMemberBab = ?", vmemberBab).First(&row).Error; err != nil {
+		t.Fatalf("failed to read NBab for VMemberBab %d: %v", vmemberBab, err)
+	}
+	return row.NBab
+}
+
+func assertKitabTitleIndonesia(t *testing.T, vmember uint, want string) {
+	t.Helper()
+	ind := getKitabTitleIndonesia(t, vmember)
+	if ind == nil {
+		t.Errorf("VMember %d NKitab = nil, want %q", vmember, want)
+		return
+	}
+	if *ind != want {
+		t.Errorf("VMember %d NKitab = %q, want %q", vmember, *ind, want)
+	}
+}
+
+func assertBabTitleIndonesia(t *testing.T, vmemberBab uint, want string) {
+	t.Helper()
+	ind := getBabTitleIndonesia(t, vmemberBab)
+	if ind == nil {
+		t.Errorf("VMemberBab %d NBab = nil, want %q", vmemberBab, want)
+		return
+	}
+	if *ind != want {
+		t.Errorf("VMemberBab %d NBab = %q, want %q", vmemberBab, *ind, want)
 	}
 }
 
@@ -1349,4 +1457,310 @@ func TestTitleBulkTranslate_SweepAllBatchesFailTerminates(t *testing.T) {
 	assertKitabTitleEmpty(t, 1)
 	assertKitabTitleEmpty(t, 2)
 	assertKitabTitleEmpty(t, 3)
+}
+
+// === Title bulk translate (Indonesian variant) — /ai/cron/translate/title/bulk/id/:kitabName ===
+
+func TestTitleBulkTranslateID_MissingKey(t *testing.T) {
+	os.Unsetenv("OPENCODE_CRON_KEY")
+	t.Cleanup(func() { os.Unsetenv("OPENCODE_CRON_KEY") })
+
+	app := setupTestApp(t)
+
+	resp := makeRequest(t, app, "POST", "/ai/cron/translate/title/bulk/id/ShahihBukhari", nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+
+	var body map[string]interface{}
+	decodeJSON(t, resp, &body)
+	if body["status"] != "error" {
+		t.Errorf("status = %v, want 'error'", body["status"])
+	}
+}
+
+func TestTitleBulkTranslateID_WrongKey(t *testing.T) {
+	setCronKey(t, "correct-secret")
+
+	app := setupTestApp(t)
+
+	resp := makeRequest(t, app, "POST", "/ai/cron/translate/title/bulk/id/ShahihBukhari?key=wrong-secret", nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+func TestTitleBulkTranslateID_NoKeyConfigured(t *testing.T) {
+	os.Unsetenv("OPENCODE_CRON_KEY")
+	t.Cleanup(func() { os.Unsetenv("OPENCODE_CRON_KEY") })
+
+	app := setupTestApp(t)
+
+	resp := makeRequest(t, app, "POST", "/ai/cron/translate/title/bulk/id/ShahihBukhari?key=anything", nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d (fail closed when key unset)", resp.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+func TestTitleBulkTranslateID_UnknownKitab(t *testing.T) {
+	setCronKey(t, "correct-secret")
+
+	app := setupTestApp(t)
+
+	resp := makeRequest(t, app, "POST", "/ai/cron/translate/title/bulk/id/NotARealKitab?key=correct-secret", nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+
+	var body map[string]interface{}
+	decodeJSON(t, resp, &body)
+	if body["message"] != "unknown kitab: NotARealKitab" {
+		t.Errorf("message = %v, want 'unknown kitab: NotARealKitab'", body["message"])
+	}
+}
+
+func TestTitleBulkTranslateID_InvalidType(t *testing.T) {
+	setCronKey(t, "correct-secret")
+
+	app := setupTestApp(t)
+
+	resp := makeRequest(t, app, "POST", "/ai/cron/translate/title/bulk/id/ShahihBukhari?key=correct-secret&type=chapters", nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+
+	var body map[string]interface{}
+	decodeJSON(t, resp, &body)
+	if body["message"] != "type must be one of: kitab, bab, both" {
+		t.Errorf("message = %v, want 'type must be one of: kitab, bab, both'", body["message"])
+	}
+}
+
+func TestTitleBulkTranslateID_InvalidLimit(t *testing.T) {
+	setCronKey(t, "correct-secret")
+
+	app := setupTestApp(t)
+
+	for _, raw := range []string{"abc", "0", "-5"} {
+		resp := makeRequest(t, app, "POST", "/ai/cron/translate/title/bulk/id/ShahihBukhari?key=correct-secret&limit="+raw, nil)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("limit=%q status = %d, want %d", raw, resp.StatusCode, http.StatusBadRequest)
+		}
+	}
+}
+
+func TestTitleBulkTranslateID_KitabSuccessUpdatesNKitabBen(t *testing.T) {
+	setCronKey(t, "correct-secret")
+	reply := `{"1":"Kitab Iman yang baru","2":"Kitab Shalat yang baru"}`
+	captured := setBulkExecMock(t, bulkExecMockConfig{replyOverrides: map[int]string{1: reply}})
+
+	app := setupTestApp(t)
+	seedKitabShahihBukhari(t, []map[string]interface{}{
+		{"VMember": 1, "NKitabArab": "كتاب الإيمان", "NKitab": "Kitab Iman", "NKitabEng": "", "NKitabBen": ""},
+		{"VMember": 2, "NKitabArab": "كتاب الصلاة", "NKitab": "Kitab Sholat lama", "NKitabEng": nil, "NKitabBen": nil},
+	})
+
+	resp := makeRequest(t, app, "POST", "/ai/cron/translate/title/bulk/id/ShahihBukhari?key=correct-secret&type=kitab", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var body titleBulkTranslateResponse
+	decodeJSON(t, resp, &body)
+	if body.Processed != 2 {
+		t.Errorf("processed = %d, want 2", body.Processed)
+	}
+	if body.Updated != 2 {
+		t.Errorf("updated = %d, want 2", body.Updated)
+	}
+	if body.Kitab.Processed != 2 || body.Kitab.Updated != 2 {
+		t.Errorf("kitab processed/updated = %d/%d, want 2/2", body.Kitab.Processed, body.Kitab.Updated)
+	}
+	if body.Bab.Processed != 0 || body.Bab.Updated != 0 {
+		t.Errorf("bab processed/updated = %d/%d, want 0/0 (skipped)", body.Bab.Processed, body.Bab.Updated)
+	}
+	if len(body.Failed) != 0 {
+		t.Errorf("failed = %v, want empty list", body.Failed)
+	}
+
+	assertKitabTitleBen(t, 1, "Kitab Iman yang baru")
+	assertKitabTitleBen(t, 2, "Kitab Shalat yang baru")
+
+	// The English (NKitabEng) and original Indonesian (NKitab) must stay untouched.
+	assertKitabTitleEmpty(t, 1)
+	assertKitabTitleEmpty(t, 2)
+	assertKitabTitleIndonesia(t, 1, "Kitab Iman")
+	assertKitabTitleIndonesia(t, 2, "Kitab Sholat lama")
+
+	if len(*captured) != 1 {
+		t.Fatalf("got %d CLI calls, want 1", len(*captured))
+	}
+	args := (*captured)[0]
+	if !containsArg(args, "--agent") || !containsArg(args, "translate-title-bulk-id") {
+		t.Errorf("agent should be 'translate-title-bulk-id', got args: %v", args)
+	}
+
+	prompt := args[len(args)-1]
+	if !json.Valid([]byte(prompt)) {
+		t.Fatalf("prompt is not valid JSON: %q", prompt)
+	}
+	var payload map[string]struct {
+		Arabic    string `json:"arabic"`
+		Indonesia string `json:"indonesia"`
+	}
+	if err := json.Unmarshal([]byte(prompt), &payload); err != nil {
+		t.Fatalf("failed to decode prompt payload: %v", err)
+	}
+	if e := payload["2"]; e.Arabic != "كتاب الصلاة" || e.Indonesia != "Kitab Sholat lama" {
+		t.Errorf("payload[2] = %+v, want arabic 'كتاب الصلاة' and indonesia 'Kitab Sholat lama'", e)
+	}
+}
+
+func TestTitleBulkTranslateID_BabSuccessUpdatesNBabBen(t *testing.T) {
+	setCronKey(t, "correct-secret")
+	reply := `{"10":"Bab Wudhu yang baru","20":"Bab Shalat yang baru"}`
+	captured := setBulkExecMock(t, bulkExecMockConfig{replyOverrides: map[int]string{1: reply}})
+
+	app := setupTestApp(t)
+	seedBabShahihBukhari(t, []map[string]interface{}{
+		{"VMemberBab": 10, "NBabArab": "باب الوضوء", "NBab": "Bab Wudhu", "NBabEng": nil, "NBabBen": nil},
+		{"VMemberBab": 20, "NBabArab": "باب الصلاة", "NBab": "Bab Sholat lama", "NBabEng": "", "NBabBen": ""},
+	})
+
+	resp := makeRequest(t, app, "POST", "/ai/cron/translate/title/bulk/id/ShahihBukhari?key=correct-secret&type=bab", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var body titleBulkTranslateResponse
+	decodeJSON(t, resp, &body)
+	if body.Processed != 2 {
+		t.Errorf("processed = %d, want 2", body.Processed)
+	}
+	if body.Updated != 2 {
+		t.Errorf("updated = %d, want 2", body.Updated)
+	}
+	if body.Bab.Processed != 2 || body.Bab.Updated != 2 {
+		t.Errorf("bab processed/updated = %d/%d, want 2/2", body.Bab.Processed, body.Bab.Updated)
+	}
+	if body.Kitab.Processed != 0 {
+		t.Errorf("kitab processed = %d, want 0 (skipped)", body.Kitab.Processed)
+	}
+	if len(body.Failed) != 0 {
+		t.Errorf("failed = %v, want empty list", body.Failed)
+	}
+
+	assertBabTitleBen(t, 10, "Bab Wudhu yang baru")
+	assertBabTitleBen(t, 20, "Bab Shalat yang baru")
+
+	// The English (NBabEng) and original Indonesian (NBab) must stay untouched.
+	assertBabTitleEmpty(t, 10)
+	assertBabTitleEmpty(t, 20)
+	assertBabTitleIndonesia(t, 10, "Bab Wudhu")
+	assertBabTitleIndonesia(t, 20, "Bab Sholat lama")
+
+	if len(*captured) != 1 {
+		t.Fatalf("got %d CLI calls, want 1", len(*captured))
+	}
+	args := (*captured)[0]
+	if !containsArg(args, "--agent") || !containsArg(args, "translate-title-bulk-id") {
+		t.Errorf("agent should be 'translate-title-bulk-id', got args: %v", args)
+	}
+}
+
+func TestTitleBulkTranslateID_BothTablesByDefault(t *testing.T) {
+	setCronKey(t, "correct-secret")
+	captured := setBulkExecMock(t, bulkExecMockConfig{
+		replyOverrides: map[int]string{
+			1: `{"1":"Kitab Iman yang baru"}`,
+			2: `{"10":"Bab Shalat yang baru"}`,
+		},
+	})
+
+	app := setupTestApp(t)
+	seedKitabShahihBukhari(t, []map[string]interface{}{
+		{"VMember": 1, "NKitabArab": "كتاب الإيمان", "NKitab": "Kitab Iman", "NKitabEng": nil, "NKitabBen": nil},
+	})
+	seedBabShahihBukhari(t, []map[string]interface{}{
+		{"VMemberBab": 10, "NBabArab": "باب الصلاة", "NBab": "Bab Sholat", "NBabEng": nil, "NBabBen": nil},
+	})
+
+	// No ?type= present: both tables are translated by default.
+	resp := makeRequest(t, app, "POST", "/ai/cron/translate/title/bulk/id/ShahihBukhari?key=correct-secret", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var body titleBulkTranslateResponse
+	decodeJSON(t, resp, &body)
+	if body.Processed != 2 {
+		t.Errorf("processed = %d, want 2", body.Processed)
+	}
+	if body.Updated != 2 {
+		t.Errorf("updated = %d, want 2", body.Updated)
+	}
+	if body.Kitab.Processed != 1 || body.Bab.Processed != 1 {
+		t.Errorf("kitab/bab processed = %d/%d, want 1/1", body.Kitab.Processed, body.Bab.Processed)
+	}
+	if len(body.Failed) != 0 {
+		t.Errorf("failed = %v, want empty", body.Failed)
+	}
+	if len(*captured) != 2 {
+		t.Fatalf("got %d CLI calls, want 2 (one per table)", len(*captured))
+	}
+	for _, args := range *captured {
+		if !containsArg(args, "--agent") || !containsArg(args, "translate-title-bulk-id") {
+			t.Errorf("agent should be 'translate-title-bulk-id', got args: %v", args)
+		}
+	}
+
+	assertKitabTitleBen(t, 1, "Kitab Iman yang baru")
+	assertBabTitleBen(t, 10, "Bab Shalat yang baru")
+}
+
+func TestTitleBulkTranslateID_NoMatchingRows(t *testing.T) {
+	setCronKey(t, "correct-secret")
+	captured := setBulkExecMock(t, bulkExecMockConfig{})
+
+	app := setupTestApp(t)
+	seedKitabShahihBukhari(t, []map[string]interface{}{
+		{"VMember": 1, "NKitabArab": "a1", "NKitab": "satu", "NKitabEng": nil, "NKitabBen": "done"},
+	})
+	seedBabShahihBukhari(t, []map[string]interface{}{
+		{"VMemberBab": 10, "NBabArab": "b1", "NBab": "satu", "NBabEng": nil, "NBabBen": "done"},
+	})
+
+	resp := makeRequest(t, app, "POST", "/ai/cron/translate/title/bulk/id/ShahihBukhari?key=correct-secret", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var body titleBulkTranslateResponse
+	decodeJSON(t, resp, &body)
+	if body.Processed != 0 {
+		t.Errorf("processed = %d, want 0", body.Processed)
+	}
+	if body.Updated != 0 {
+		t.Errorf("updated = %d, want 0", body.Updated)
+	}
+	if len(*captured) != 0 {
+		t.Errorf("got %d CLI calls, want 0", len(*captured))
+	}
+}
+
+func TestTitleBulkTranslateID_RouteRegistered(t *testing.T) {
+	app := setupTestApp(t)
+
+	routes := app.Stack()
+	found := false
+	for _, methodRoutes := range routes {
+		for _, route := range methodRoutes {
+			if route.Method == "POST" && route.Path == "/ai/cron/translate/title/bulk/id/:kitabName" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("expected POST /ai/cron/translate/title/bulk/id/:kitabName route to be registered")
+	}
 }

@@ -84,12 +84,12 @@ func setCronKey(t *testing.T, key string) {
 
 func seedShahihBukhari(t *testing.T, rows []map[string]interface{}) {
 	t.Helper()
-	if err := database.DB.Exec(`CREATE TABLE IF NOT EXISTS "ShahihBukhari" ("Nomer" INTEGER PRIMARY KEY, "Arabic" TEXT, "Indonesia" TEXT, "English" TEXT)`).Error; err != nil {
+	if err := database.DB.Exec(`CREATE TABLE IF NOT EXISTS "ShahihBukhari" ("Nomer" INTEGER PRIMARY KEY, "Arabic" TEXT, "Indonesia" TEXT, "English" TEXT, "Bengali" TEXT)`).Error; err != nil {
 		t.Fatalf("failed to create kitab table: %v", err)
 	}
 	for _, row := range rows {
-		if err := database.DB.Exec(`INSERT INTO "ShahihBukhari" ("Nomer", "Arabic", "Indonesia", "English") VALUES (?, ?, ?, ?)`,
-			row["Nomer"], row["Arabic"], row["Indonesia"], row["English"]).Error; err != nil {
+		if err := database.DB.Exec(`INSERT INTO "ShahihBukhari" ("Nomer", "Arabic", "Indonesia", "English", "Bengali") VALUES (?, ?, ?, ?, ?)`,
+			row["Nomer"], row["Arabic"], row["Indonesia"], row["English"], row["Bengali"]).Error; err != nil {
 			t.Fatalf("failed to seed row %v: %v", row, err)
 		}
 	}
@@ -123,6 +123,60 @@ func assertEnglishEmpty(t *testing.T, nomer uint) {
 	eng := getKitabEnglish(t, nomer)
 	if eng != nil && *eng != "" {
 		t.Errorf("Nomer %d English = %q, want empty", nomer, *eng)
+	}
+}
+
+func getKitabBengali(t *testing.T, nomer uint) *string {
+	t.Helper()
+	var row struct {
+		Bengali *string
+	}
+	if err := database.DB.Table("ShahihBukhari").Select("Bengali").Where("Nomer = ?", nomer).First(&row).Error; err != nil {
+		t.Fatalf("failed to read Bengali for Nomer %d: %v", nomer, err)
+	}
+	return row.Bengali
+}
+
+func assertBengali(t *testing.T, nomer uint, want string) {
+	t.Helper()
+	bgr := getKitabBengali(t, nomer)
+	if bgr == nil {
+		t.Errorf("Nomer %d Bengali = nil, want %q", nomer, want)
+		return
+	}
+	if *bgr != want {
+		t.Errorf("Nomer %d Bengali = %q, want %q", nomer, *bgr, want)
+	}
+}
+
+func assertBengaliEmpty(t *testing.T, nomer uint) {
+	t.Helper()
+	bgr := getKitabBengali(t, nomer)
+	if bgr != nil && *bgr != "" {
+		t.Errorf("Nomer %d Bengali = %q, want empty", nomer, *bgr)
+	}
+}
+
+func getKitabIndonesia(t *testing.T, nomer uint) *string {
+	t.Helper()
+	var row struct {
+		Indonesia *string
+	}
+	if err := database.DB.Table("ShahihBukhari").Select("Indonesia").Where("Nomer = ?", nomer).First(&row).Error; err != nil {
+		t.Fatalf("failed to read Indonesia for Nomer %d: %v", nomer, err)
+	}
+	return row.Indonesia
+}
+
+func assertIndonesia(t *testing.T, nomer uint, want string) {
+	t.Helper()
+	ind := getKitabIndonesia(t, nomer)
+	if ind == nil {
+		t.Errorf("Nomer %d Indonesia = nil, want %q", nomer, want)
+		return
+	}
+	if *ind != want {
+		t.Errorf("Nomer %d Indonesia = %q, want %q", nomer, *ind, want)
 	}
 }
 

@@ -1373,3 +1373,258 @@ func TestBulkTranslate_SweepAllBatchesFailTerminates(t *testing.T) {
 	assertEnglishEmpty(t, 2)
 	assertEnglishEmpty(t, 3)
 }
+
+// === Bulk translate (Indonesian variant) — /ai/cron/translate/bulk/id/:kitabName ===
+
+func TestBulkTranslateID_MissingKey(t *testing.T) {
+	os.Unsetenv("OPENCODE_CRON_KEY")
+	t.Cleanup(func() { os.Unsetenv("OPENCODE_CRON_KEY") })
+
+	app := setupTestApp(t)
+
+	resp := makeRequest(t, app, "POST", "/ai/cron/translate/bulk/id/ShahihBukhari", nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+
+	var body map[string]interface{}
+	decodeJSON(t, resp, &body)
+	if body["status"] != "error" {
+		t.Errorf("status = %v, want 'error'", body["status"])
+	}
+}
+
+func TestBulkTranslateID_WrongKey(t *testing.T) {
+	setCronKey(t, "correct-secret")
+
+	app := setupTestApp(t)
+
+	resp := makeRequest(t, app, "POST", "/ai/cron/translate/bulk/id/ShahihBukhari?key=wrong-secret", nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+func TestBulkTranslateID_NoKeyConfigured(t *testing.T) {
+	os.Unsetenv("OPENCODE_CRON_KEY")
+	t.Cleanup(func() { os.Unsetenv("OPENCODE_CRON_KEY") })
+
+	app := setupTestApp(t)
+
+	resp := makeRequest(t, app, "POST", "/ai/cron/translate/bulk/id/ShahihBukhari?key=anything", nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d (fail closed when key unset)", resp.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+func TestBulkTranslateID_UnknownKitab(t *testing.T) {
+	setCronKey(t, "correct-secret")
+
+	app := setupTestApp(t)
+
+	resp := makeRequest(t, app, "POST", "/ai/cron/translate/bulk/id/NotARealKitab?key=correct-secret", nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+
+	var body map[string]interface{}
+	decodeJSON(t, resp, &body)
+	if body["message"] != "unknown kitab: NotARealKitab" {
+		t.Errorf("message = %v, want 'unknown kitab: NotARealKitab'", body["message"])
+	}
+}
+
+func TestBulkTranslateID_InvalidLimit(t *testing.T) {
+	setCronKey(t, "correct-secret")
+
+	app := setupTestApp(t)
+
+	for _, raw := range []string{"abc", "0", "-5"} {
+		resp := makeRequest(t, app, "POST", "/ai/cron/translate/bulk/id/ShahihBukhari?key=correct-secret&limit="+raw, nil)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("limit=%q status = %d, want %d", raw, resp.StatusCode, http.StatusBadRequest)
+		}
+	}
+}
+
+func TestBulkTranslateID_SuccessUpdatesBengali(t *testing.T) {
+	setCronKey(t, "correct-secret")
+	reply := `{"1":"Terjemahan hadits pertama yang baru","2":"Terjemahan hadits kedua yang baru","3":"Terjemahan hadits ketiga yang baru"}`
+	captured := setBulkExecMock(t, bulkExecMockConfig{replyOverrides: map[int]string{1: reply}})
+
+	app := setupTestApp(t)
+	seedShahihBukhari(t, []map[string]interface{}{
+		{"Nomer": 1, "Arabic": "hadith one arabic", "Indonesia": "terjemah satu", "English": "", "Bengali": ""},
+		{"Nomer": 2, "Arabic": "hadith two arabic", "Indonesia": "terjemah dua", "English": nil, "Bengali": nil},
+		{"Nomer": 3, "Arabic": "hadith three arabic", "Indonesia": "terjemah tiga", "English": nil, "Bengali": nil},
+	})
+
+	resp := makeRequest(t, app, "POST", "/ai/cron/translate/bulk/id/ShahihBukhari?key=correct-secret", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var body bulkTranslateResponse
+	decodeJSON(t, resp, &body)
+	if body.Processed != 3 {
+		t.Errorf("processed = %d, want 3", body.Processed)
+	}
+	if body.Updated != 3 {
+		t.Errorf("updated = %d, want 3", body.Updated)
+	}
+	if len(body.Failed) != 0 {
+		t.Errorf("failed = %v, want empty list", body.Failed)
+	}
+
+	assertBengali(t, 1, "Terjemahan hadits pertama yang baru")
+	assertBengali(t, 2, "Terjemahan hadits kedua yang baru")
+	assertBengali(t, 3, "Terjemahan hadits ketiga yang baru")
+
+	// The English column must stay untouched by the Indonesian variant.
+	assertEnglishEmpty(t, 1)
+	assertEnglishEmpty(t, 2)
+	assertEnglishEmpty(t, 3)
+
+	// The original Indonesian reference must never be overwritten.
+	assertIndonesia(t, 1, "terjemah satu")
+	assertIndonesia(t, 2, "terjemah dua")
+	assertIndonesia(t, 3, "terjemah tiga")
+
+	if len(*captured) != 1 {
+		t.Fatalf("got %d CLI calls, want 1", len(*captured))
+	}
+	args := (*captured)[0]
+	if !containsArg(args, "--agent") || !containsArg(args, "translate-bulk-id") {
+		t.Errorf("agent should be 'translate-bulk-id', got args: %v", args)
+	}
+
+	prompt := args[len(args)-1]
+	if !json.Valid([]byte(prompt)) {
+		t.Fatalf("prompt is not valid JSON: %q", prompt)
+	}
+	var payload map[string]struct {
+		Arabic    string `json:"arabic"`
+		Indonesia string `json:"indonesia"`
+	}
+	if err := json.Unmarshal([]byte(prompt), &payload); err != nil {
+		t.Fatalf("failed to decode prompt payload: %v", err)
+	}
+	if e := payload["1"]; e.Arabic != "hadith one arabic" || e.Indonesia != "terjemah satu" {
+		t.Errorf("payload[1] = %+v, want arabic 'hadith one arabic' and indonesia 'terjemah satu'", e)
+	}
+	if e := payload["3"]; e.Arabic != "hadith three arabic" || e.Indonesia != "terjemah tiga" {
+		t.Errorf("payload[3] = %+v, want arabic 'hadith three arabic' and indonesia 'terjemah tiga'", e)
+	}
+}
+
+func TestBulkTranslateID_SkipAlreadyFilledBengaliRows(t *testing.T) {
+	setCronKey(t, "correct-secret")
+	setBulkExecMock(t, bulkExecMockConfig{replyOverrides: map[int]string{1: `{"2":"dua yang baru"}`}})
+
+	app := setupTestApp(t)
+	seedShahihBukhari(t, []map[string]interface{}{
+		{"Nomer": 1, "Arabic": "hadith one", "Indonesia": "satu", "English": nil, "Bengali": "sudah diisi"},
+		{"Nomer": 2, "Arabic": "hadith two", "Indonesia": "dua", "English": nil, "Bengali": nil},
+	})
+
+	resp := makeRequest(t, app, "POST", "/ai/cron/translate/bulk/id/ShahihBukhari?key=correct-secret", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var body bulkTranslateResponse
+	decodeJSON(t, resp, &body)
+	if body.Processed != 1 {
+		t.Errorf("processed = %d, want 1 (row 1 already translated)", body.Processed)
+	}
+	if body.Updated != 1 {
+		t.Errorf("updated = %d, want 1", body.Updated)
+	}
+	if len(body.Failed) != 0 {
+		t.Errorf("failed = %v, want empty", body.Failed)
+	}
+
+	assertBengali(t, 1, "sudah diisi")
+	assertBengali(t, 2, "dua yang baru")
+}
+
+func TestBulkTranslateID_NoMatchingRows(t *testing.T) {
+	setCronKey(t, "correct-secret")
+	captured := setBulkExecMock(t, bulkExecMockConfig{})
+
+	app := setupTestApp(t)
+	seedShahihBukhari(t, []map[string]interface{}{
+		{"Nomer": 1, "Arabic": "hadith one", "Indonesia": "satu", "English": nil, "Bengali": "done"},
+	})
+
+	resp := makeRequest(t, app, "POST", "/ai/cron/translate/bulk/id/ShahihBukhari?key=correct-secret", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var body bulkTranslateResponse
+	decodeJSON(t, resp, &body)
+	if body.Processed != 0 {
+		t.Errorf("processed = %d, want 0", body.Processed)
+	}
+	if body.Updated != 0 {
+		t.Errorf("updated = %d, want 0", body.Updated)
+	}
+	if len(*captured) != 0 {
+		t.Errorf("got %d CLI calls, want 0", len(*captured))
+	}
+}
+
+func TestBulkTranslateID_CLIFailureAllRowsFail(t *testing.T) {
+	setCronKey(t, "correct-secret")
+	setBulkExecMock(t, bulkExecMockConfig{failEveryCall: true})
+
+	app := setupTestApp(t)
+	seedShahihBukhari(t, []map[string]interface{}{
+		{"Nomer": 1, "Arabic": "hadith one", "Indonesia": "satu", "English": nil, "Bengali": nil},
+		{"Nomer": 2, "Arabic": "hadith two", "Indonesia": "dua", "English": nil, "Bengali": nil},
+	})
+
+	resp := makeRequest(t, app, "POST", "/ai/cron/translate/bulk/id/ShahihBukhari?key=correct-secret", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var body bulkTranslateResponse
+	decodeJSON(t, resp, &body)
+	if body.Processed != 2 {
+		t.Errorf("processed = %d, want 2", body.Processed)
+	}
+	if body.Updated != 0 {
+		t.Errorf("updated = %d, want 0", body.Updated)
+	}
+	if len(body.Failed) != 2 {
+		t.Fatalf("failed = %v, want 2 entries", body.Failed)
+	}
+	wantErr := "opencode run failed: opencode exec failed at call 1"
+	for _, f := range body.Failed {
+		if f.Error != wantErr {
+			t.Errorf("failed error = %q, want %q", f.Error, wantErr)
+		}
+	}
+
+	assertBengaliEmpty(t, 1)
+	assertBengaliEmpty(t, 2)
+}
+
+func TestBulkTranslateID_RouteRegistered(t *testing.T) {
+	app := setupTestApp(t)
+
+	routes := app.Stack()
+	found := false
+	for _, methodRoutes := range routes {
+		for _, route := range methodRoutes {
+			if route.Method == "POST" && route.Path == "/ai/cron/translate/bulk/id/:kitabName" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("expected POST /ai/cron/translate/bulk/id/:kitabName route to be registered")
+	}
+}

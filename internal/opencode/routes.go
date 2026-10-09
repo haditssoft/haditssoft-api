@@ -11,6 +11,8 @@ func RegisterRoutes(rg fiber.Router) {
 
 	app.Post("/cron/translate/:kitabName", TranslateHadiths)
 	app.Post("/cron/translate/bulk/:kitabName", TranslateHadithsBulk)
+	app.Post("/cron/translate/bulk/id/:kitabName", TranslateHadithsBulkID)
 	app.Post("/cron/translate/title/bulk/:kitabName", TranslateTitlesBulk)
+	app.Post("/cron/translate/title/bulk/id/:kitabName", TranslateTitlesBulkID)
 	app.Post("/ask", middleware.Protected(), AskOpenCode)
 }
