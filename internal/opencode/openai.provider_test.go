@@ -10,8 +10,6 @@ import (
 	"os"
 	"strings"
 	"testing"
-
-	"github.com/haditssoft/haditssoft-backend/internal/shared/auth"
 )
 
 // setAIProviderEnv sets the AI provider env vars and restores them on cleanup.
@@ -367,38 +365,33 @@ func TestLoadAgentSystemPrompt(t *testing.T) {
 	})
 }
 
-func TestRoute_AskOpenAIProvider(t *testing.T) {
+func TestRoute_SummarizeOpenAIProviderNeverUsesExecCLI(t *testing.T) {
+	setCronKey(t, "correct-secret")
 	setAIProviderEnv(t, "openai", "key", "https://api.example.com", "model")
 
 	chatCalled := false
 	setChatCompletion(t, func(ctx context.Context, agent, prompt string) (string, error) {
 		chatCalled = true
-		return "ai route reply", nil
+		return "ai route summary", nil
 	})
 	captured := setExecCapture(t, "", nil)
 
 	app := setupTestApp(t)
-	jwt, err := auth.GenerateAccessToken(1, "test@example.com")
-	if err != nil {
-		t.Fatalf("failed to generate token: %v", err)
-	}
+	seedHadith(t, 1, "arabic one", "indonesia one", "", "", "")
 
-	body := map[string]interface{}{"prompt": "hello"}
-	resp := makeRequestWithToken(t, app, "POST", "/ai/ask", body, jwt)
+	resp := makeRequest(t, app, "POST", "/ai/cron/summarize/ShahihBukhari?key=correct-secret&language=Indonesia", nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 
-	var result map[string]interface{}
-	decodeJSON(t, resp, &result)
-	if result["reply"] != "ai route reply" {
-		t.Errorf("reply = %v, want %q", result["reply"], "ai route reply")
-	}
 	if !chatCalled {
-		t.Error("chatCompletionFunc was not called for /ai/ask")
+		t.Error("chatCompletionFunc was not called for summarize")
 	}
 	if len(*captured) != 0 {
 		t.Errorf("execCommandFunc called %d time(s), want 0", len(*captured))
+	}
+	if got := getSummaryColumn(t, 1, "Indonesia"); got == nil || *got != "ai route summary" {
+		t.Errorf("summary = %v, want 'ai route summary'", got)
 	}
 }
 

@@ -1,5 +1,7 @@
 package opencode
 
 type AskOpenCodeRequest struct {
-	Prompt string `form:"prompt" json:"prompt" validate:"required,min=1"`
+	Kitab    string `form:"kitab" json:"kitab" validate:"required"`
+	Nomer    string `form:"nomer" json:"nomer" validate:"required,numeric"`
+	Language string `form:"language" json:"language" validate:"required"`
 }

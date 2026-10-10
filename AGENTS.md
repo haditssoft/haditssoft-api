@@ -246,11 +246,32 @@ Applications: re-translate the existing Indonesian from the Arabic (Arabic autho
 - Agent: `opencode run --format json --pure --agent translate-title-bulk-id` — instructions in `.opencode/agents/translate-title-bulk-id.md`
 - Reply parsing/failure/sweep semantics and response shape (with `kitab`/`bab` breakdown) identical to the English title bulk endpoint
 
-### AI Ask Endpoint (context + timeout)
+### AI Ask Endpoint (serves stored summaries)
 - `POST /ai/ask` (JWT-protected)
-- The subprocess is bound to the HTTP request context via `exec.CommandContext`, so when the client disconnects, the `opencode` subprocess is killed immediately (no zombie processes)
-- A hard timeout is enforced with `context.WithTimeout`: default **90s** (`defaultAskTimeoutSec` in `internal/opencode/handler.go`), configurable via `OPENCODE_ASK_TIMEOUT_SEC` env var (must be ≥ 1; invalid/zero values fall back to the default)
-- On timeout, the handler returns `502 Bad Gateway` with `{"error": "failed to get AI response"}` (the exec error is logged but not exposed)
+- Request body: `{"kitab": "ShahihBukhari", "nomer": "1", "language": "Indonesia"}` — `nomer` is sent as a string but stored as an integer primary key; `language` is one of `Indonesia`, `English`, `Urdu`, `Bengali` (case-insensitive)
+- Does **not** call the AI at runtime. It looks up the pre-computed summary in the per-kitab `<kitabName>Summary` table (via `models.GetHadithSummary`)
+- Responses:
+  - `200` → `{"reply": "<summary>"}`
+  - `400` → `{"error": "unknown kitab: ..."}` or `{"error": "language must be one of: ..."}`, or `{"errors": {...}}` on body/field validation failure
+  - `404` → `{"error": "summary not found"}` when no summary exists yet (run the summarize cron first)
+  - `500` → `{"error": "failed to get summary"}` on DB error
+
+### Summarize Cron Endpoint (pre-compute per-language summaries)
+- `POST /ai/cron/summarize/:kitabName?key=<OPENCODE_CRON_KEY>&language=Indonesia&limit=10`
+- Cron-only: guarded by `OPENCODE_CRON_KEY` (`?key=` query param, constant-time compare, `401` if missing/wrong) — NOT JWT-protected
+- `kitabName` must be in `models.GetIndexOfKitab` (`400` otherwise); `language` is required and must be a `models.SummaryLanguages` value (`400` otherwise)
+- Selects rows from the hadith table where the source translation for that language is non-empty **and** no summary exists yet for that language (`NOT EXISTS` against `<kitabName>Summary`), ordered by `Nomer ASC`, limited by `?limit=` (default 10, must be ≥ 1)
+- For each row sequentially: runs `opencode run --format json --pure --agent summarize` (fixed agent, ignores `OPENCODE_AGENT`) with a prompt built from Arabic + the same-language translation, then `SaveHadithSummary` upserts `Nomer` + the requested language column
+- Per-call timeout via `context.WithTimeout` using `OPENCODE_ASK_TIMEOUT_SEC` (default **90s**, min 1) — same policy as the old ask endpoint
+- Per-record CLI/db failures are collected, the batch continues; empty/whitespace replies count as failed (not written back)
+- Response: `{"processed": n, "updated": m, "failed": [{"nomer": x, "error": "..."}]}`
+- **Sweep mode** (`?all=1`): keeps draining until no rows remain, advancing by `Nomer ASC` and never resending an attempted Nomer (guaranteed termination). `?maxBatches=N` (≥ 1) caps batches; absent = unbounded. Without `?all=1`, a single batch is processed
+- Storage: one `<kitabName>Summary` table per kitab (created by `models.EnsureSummaryTables()` at startup), with `Nomer` as PK and one nullable column per language (`Indonesia`, `English`, `Urdu`, `Bengali`)
+- Uses the request context (`c.Context()`) for subprocess cancellation; the batch aborts remaining rows if the client disconnects
+
+### AI Provider (CLI vs OpenAI-compatible)
+- When `AI_PROVIDER=openai` and `OPENAI_API_KEY` is set, AI calls go over HTTP to `OPENAI_BASE_URL` (default model `OPENAI_MODEL`); otherwise they shell out to the `opencode` CLI
+- In both paths the agent name is explicit (translate/summarize) and the agent `.md` file from `.opencode/agents/` is used as the system prompt in the HTTP path
 
 ## Test Coverage (mandatory)
 

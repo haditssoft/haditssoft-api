@@ -22,6 +22,7 @@ import (
 	"github.com/haditssoft/haditssoft-backend/internal/theme"
 	"github.com/haditssoft/haditssoft-backend/internal/translationsetting"
 	"github.com/haditssoft/haditssoft-backend/internal/user"
+	"github.com/haditssoft/haditssoft-backend/models"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/compress"
@@ -33,6 +34,9 @@ func init() {
 	env.LoadEnvVariables()
 	database.Init()
 	database.RunMigrations()
+	if err := models.EnsureSummaryTables(); err != nil {
+		panic("Failed to create summary tables: " + err.Error())
+	}
 	validator.RegisterCustomValidations()
 }
 

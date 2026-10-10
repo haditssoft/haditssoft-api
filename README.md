@@ -130,7 +130,7 @@ All configuration is read from the environment (loaded from `.env` via godotenv)
 | `OPENCODE_URL`         | no       | `http://127.0.0.1:4096` | Local opencode server base URL for the AI endpoint |
 | `OPENCODE_PROVIDER_ID` | no       | `opencode` | AI model provider ID |
 | `OPENCODE_MODEL_ID`    | no       | `deepseek-v4-flash-free` | AI model ID |
-| `OPENCODE_AGENT`       | no       | `plan` | opencode agent used for `/ai/ask` |
+| `OPENCODE_AGENT`       | no       | `plan` | opencode agent used by the AI provider path (translate/summarize fix their own agent) |
 
 > **Note:** `JWT_SECRET`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, and `DB_CREDENTIAL` are mandatory — the server fails to start without them.
 
@@ -294,7 +294,7 @@ See [Search Endpoints](#search-endpoints) for request/response shapes.
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | POST | `/verifyreCaptcha/` | — | Verify a reCAPTCHA token, then forward a report to Telegram |
-| POST | `/ai/ask` | 🔒 | Ask the opencode-backed AI assistant |
+| POST | `/ai/ask` | 🔒 | Return a stored hadith summary (`kitab`, `nomer`, `language`) |
 | GET | `/test` | — | Health check, returns `Hello, World!` |
 
 ### Admin (JWT + IsAdmin)

@@ -6,21 +6,16 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os"
 	"os/exec"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/haditssoft/haditssoft-backend/internal/shared/validator"
+	"github.com/haditssoft/haditssoft-backend/models"
 
 	"github.com/gofiber/fiber/v2"
 )
 
-const (
-	defaultOpenCodeAgent = "summarize"
-	defaultAskTimeoutSec = 90
-)
+const defaultAskTimeoutSec = 90
 
 type openCodeModel struct {
 	ProviderID string `json:"providerID"`
@@ -151,41 +146,33 @@ func AskOpenCode(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"errors": allErrors})
 	}
 
-	providerID := os.Getenv("OPENCODE_PROVIDER_ID")
-	modelID := os.Getenv("OPENCODE_MODEL_ID")
-
-	var model *openCodeModel
-	if providerID != "" && modelID != "" {
-		model = &openCodeModel{
-			ProviderID: providerID,
-			ModelID:    modelID,
-		}
+	if _, ok := models.GetIndexOfKitab[modelValidation.Kitab]; !ok {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "unknown kitab: " + modelValidation.Kitab,
+		})
 	}
 
-	agent := os.Getenv("OPENCODE_AGENT")
-	if agent == "" {
-		agent = defaultOpenCodeAgent
+	language, ok := models.IsSummaryLanguage(modelValidation.Language)
+	if !ok {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "language must be one of: " + strings.Join(models.SummaryLanguages, ", "),
+		})
 	}
 
-	timeoutSec := defaultAskTimeoutSec
-	if envSec := os.Getenv("OPENCODE_ASK_TIMEOUT_SEC"); envSec != "" {
-		if parsed, err := strconv.Atoi(envSec); err == nil && parsed >= 1 {
-			timeoutSec = parsed
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(c.Context(), time.Duration(timeoutSec)*time.Second)
-	defer cancel()
-
-	reply, err := runAIProvider(ctx, modelValidation.Prompt, agent, model)
+	summary, found, err := models.GetHadithSummary(modelValidation.Kitab, modelValidation.Nomer, language)
 	if err != nil {
-		log.Println("opencode run error:", err)
-		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{
-			"error": "failed to get AI response",
+		log.Println("summary lookup error:", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "failed to get summary",
+		})
+	}
+	if !found {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"error": "summary not found",
 		})
 	}
 
 	return c.JSON(fiber.Map{
-		"reply": reply,
+		"reply": summary,
 	})
 }
