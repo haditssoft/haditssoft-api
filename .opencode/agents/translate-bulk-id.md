@@ -168,7 +168,10 @@ Output only the raw JSON object.
 - Always use the simple Indonesian form of the book name and number inside each translation. Do not use academic or scholarly transliteration with diacritics, such as `Ṣaḥīḥ al-Bukhārī`. Do not add `no.`, `nomor`, or any other label before the hadith number. Do not add commas, parentheses, brackets, quotation marks, or other punctuation between the book name and number.
 
 The required format is exactly:
-`صحيح البخاري ١٢٣:` → `Sahih Bukhari 123:`
+`صحيح البخاري ١٢٣:` → `Shahih Bukhari 123:`
+`سنن الترمذي ١٢٣:` → `Sunan Tirmidzi 123:`
+`سنن الدارقطني ١٢٣:` -> `Sunan Daraquthni 123:`
+`سنن أبي داوود ١٢٣:` -> `Sunan Abu Dawud 123:`
 
 Not:
 `Ṣaḥīḥ al-Bukhārī 123:`
@@ -177,6 +180,7 @@ Not:
 `Sahih Bukhari, 123:`
 `[Sahih Bukhari 123:]`
 `"Sahih Bukhari 123:"`
+`Shahih Bukhari ١٢٣:`
 
 Integrate necessary contextual clarification naturally into the translation. Use:
 
